@@ -26,7 +26,7 @@ export async function authenticate(req:Request,optional=false):Promise<User|null
  let valid=!!user;
  if(user?.role==='admin')valid=user.code_version===(await adminCredential()).revision;
  if(user?.role==='teacher'){
-  const e=await database().prepare('SELECT closed,code_version FROM exams WHERE id=?').bind(user.exam_id).first<{closed:number;code_version:number}>();valid=!!e&&!e.closed&&e.code_version===user.code_version;
+  const e=await database().prepare('SELECT closed,draft,code_version FROM exams WHERE id=?').bind(user.exam_id).first<{closed:number;draft:number;code_version:number}>();valid=!!e&&!e.closed&&!e.draft&&e.code_version===user.code_version;
  }
  if(!valid){if(optional)return null;throw new ApiError(401,'登入已到期或考試已結案，請重新登入');}return user;
 }

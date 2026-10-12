@@ -2,6 +2,15 @@
 
 老師依考程選班、登記異常後確認全班。管理者匯入標準 Excel、開放或結案考試，並匯出學生總表與逐筆明細。
 
+## 分開匯入與年度資料
+
+- 年度學生名單與教室配置分開匯入，各有獨立的單張工作表 Excel 範本、下載及搜尋功能。年級欄國一至國三為1至3，高一至高三為4至6。
+- 可在年度名單更正姓名；教室配置可微調樓層、位置說明及核對狀態。姓名依學號同步顯示於所有既有考試；教室描述依相同代碼與名稱同步。各次考試的班級、座號、應試安排與已存出席紀錄保留。
+- 匯入新考程時，沿用年度資料建立考試快照，先進入「準備中」。再獨立匯入應試安排，確認後開放點名；開放後不可覆蓋應試安排。無特殊安排可直接開放。
+- 既有考試可由管理者「沿用年度資料」初始化共用名單與教室配置，此操作只補建缺少的年度資料。
+- 老師依國中／高中查看目前或下一場考試；記住上次學部選擇，並提供年級與班級篩選。手動時段以實際時間區間呈現，跨節考試在涵蓋的區間都可找到，但保存及報表仍只有一個場次。
+- 管理者可重設單班場次或整次考試。重設清除目前確認結果與備註、恢復未點名／抽離／免到考預設，保留歷次稽核紀錄，報表顯示未確認。版本檢查防止重設時覆蓋剛送出的新紀錄；重設後老師需重新進入。結案後需先重新開放才能重設。
+
 ## 使用規則
 
 - 老師選擇開放中的考試並填寫姓名即可開始點名，無需通行碼，登入有效 12 小時；管理者密碼登入有效 4 小時。
@@ -28,6 +37,7 @@ Node.js >= 22.13，pnpm 11。執行 pnpm install、pnpm build。開發預覽為 
 - 型別檢查：node node_modules/typescript/bin/tsc --noEmit
 - 規則測試：node --experimental-strip-types --test tests/model.test.ts
 - API 測試：node tests/api.mjs（僅允許 localhost，使用 TEST_ADMIN_PASSWORD 環境變數或測試專用預設密碼；會建立合成測試考試）
+- 資料與重設測試：node tests/admin-data.mjs（僅限本機，更新合成年度資料並建立測試考試）。時段與同步規則：node --experimental-strip-types --test tests/patrol-view.test.ts。
 - 本機資料表：先 build 產出 dist/server/wrangler.json，再執行 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_outgoing_lizard.sql。只對未套用的 migration 執行一次。
 - 正式 schema 由 Sites 部署流程套用。程式發布不搬移本機測試資料。
 

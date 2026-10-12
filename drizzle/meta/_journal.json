@@ -15,6 +15,20 @@
       "when": 1791824721978,
       "tag": "0001_mature_odin",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791826005939,
+      "tag": "0002_soft_red_skull",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1791826119274,
+      "tag": "0003_first_shinko_yamashiro",
+      "breakpoints": true
     }
   ]
 }

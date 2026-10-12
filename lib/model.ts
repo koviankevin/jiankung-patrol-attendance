@@ -3,8 +3,8 @@ export type ExamSession={id:string;event:string;title:string;date:string;classro
 export type Arrangement={id:string;session:string;arrangement:'原班'|'抽離'|'免到考';location:string};
 export type Location={code:string;name:string;floor:number|null;description:string;status:string};
 export type Dataset={version:string;event:string;students:Student[];schedule:ExamSession[];arrangements:Arrangement[];locations:Location[]};
-export const STATUSES=['出席','缺席','遲到','請假','抽離'] as const;
-export type Status=typeof STATUSES[number]|'未點名'|'免到考';
+export const STATUSES=['出席','缺席','請假','抽離'] as const;
+export type Status=typeof STATUSES[number]|'未點名'|'免到考'|'遲到';
 export type Entry={status:Status;note:string};
 export type Entries=Record<string,Entry>;
 export function initialEntries(data:Dataset,session:ExamSession):Entries{
@@ -13,7 +13,7 @@ export function initialEntries(data:Dataset,session:ExamSession):Entries{
   const a=arrangements.get(s.id);return [s.id,{status:a?.arrangement==='免到考'?'免到考':a?.arrangement==='抽離'?'抽離':'未點名',note:''}];
  }));
 }
-export function confirmEntries(data:Dataset,session:ExamSession,input:unknown):Entries{
+export function confirmEntries(data:Dataset,session:ExamSession,input:unknown,previous?:Entries):Entries{
  if(!input||typeof input!=='object'||Array.isArray(input))throw new Error('名單格式不正確');
  const baseline=initialEntries(data,session),rows=input as Entries;
  if(Object.keys(rows).length!==Object.keys(baseline).length)throw new Error('名單人數已變更，請重新載入');
@@ -22,7 +22,7 @@ export function confirmEntries(data:Dataset,session:ExamSession,input:unknown):E
   const v=rows[id];if(!v||typeof v.note!=='string'||v.note.length>300)throw new Error('每人備註限300字');
   if(base.status==='免到考'){
    if(v.status!=='免到考')throw new Error('免到考安排需由管理者於匯入階段設定');
-  }else if(v.status!=='未點名'&&!STATUSES.includes(v.status as typeof STATUSES[number]))throw new Error('出席狀態無效');
+  }else if(v.status!=='未點名'&&!(v.status==='遲到'&&previous?.[id]?.status==='遲到')&&!STATUSES.includes(v.status as typeof STATUSES[number]))throw new Error('出席狀態無效');
   result[id]={status:v.status==='未點名'?'出席':v.status,note:v.note.trim()};
  }return result;
 }
@@ -33,16 +33,37 @@ export function taipeiNow(now=new Date()){
 export function phase(s:ExamSession,date:string,time:string){return s.date<date?'已結束':s.date>date?'未開始':time<s.start?'未開始':time>=s.end?'已結束':'進行中';}
 const nonempty=(v:unknown,max=100):v is string=>typeof v==='string'&&v.length>0&&v.length<=max&&v.trim()===v;
 const code=(v:unknown):v is string=>nonempty(v,90)&&/^[A-Za-z0-9_-]+$/.test(v);
+export function validateStudents(raw:unknown):Student[]{
+ if(!Array.isArray(raw)||!raw.length||raw.length>5000)throw new Error('學生名冊需1至5000筆');
+ const ids=new Set<string>(),seats=new Set<string>(),grades=new Map<string,number>();
+ return raw.map((s:Student)=>{
+  if(!s||!nonempty(s.id,40)||!nonempty(s.name,60)||!nonempty(s.classroom,30)||!Number.isInteger(s.grade)||s.grade<1||s.grade>6||!Number.isInteger(s.seat)||s.seat<1||s.seat>999)throw new Error('學生欄位、年級或座號無效');
+  if(ids.has(s.id)||seats.has(`${s.classroom}|${s.seat}`))throw new Error('學號或同班座號重複');
+  if(grades.has(s.classroom)&&grades.get(s.classroom)!==s.grade)throw new Error(`${s.classroom}班年級不一致`);
+  ids.add(s.id);seats.add(`${s.classroom}|${s.seat}`);grades.set(s.classroom,s.grade);
+  return {id:s.id,name:s.name,grade:s.grade,classroom:s.classroom,seat:s.seat};
+ });
+}
+export function validateLocations(raw:unknown):{data:Location[];warnings:string[]}{
+ if(!Array.isArray(raw)||raw.length>500)throw new Error('教室配置最多500筆');
+ const names=new Set<string>(),codes=new Set<string>(),warnings:string[]=[];
+ const data=raw.map((l:Location)=>{
+  if(!l||!nonempty(l.code,80)||!nonempty(l.name,80)||typeof l.description!=='string'||l.description.length>500||!['已對照','待核對'].includes(l.status)||l.floor!==null&&(!Number.isInteger(l.floor)||l.floor< -10||l.floor>100))throw new Error('教室位置格式無效');
+  if(names.has(l.name)||codes.has(l.code))throw new Error('地點代碼或名稱重複');names.add(l.name);codes.add(l.code);
+  if(l.floor===null){if(l.status!=='待核對')throw new Error('未填樓層請標記待核對');warnings.push(`${l.name}：樓層待核對`);}
+  return {code:l.code,name:l.name,floor:l.floor,description:l.description,status:l.status};
+ });return {data,warnings};
+}
+// Identity, class, seat and attendance remain exam-specific; descriptive corrections are shared.
+export function withReferenceCorrections(data:Dataset,students:Student[]=[],locations:Location[]=[]):Dataset{
+ const names=new Map(students.map(s=>[s.id,s.name])),places=new Map(locations.map(l=>[l.code,l]));
+ return {...data,students:data.students.map(s=>({...s,name:names.get(s.id)||s.name})),locations:data.locations.map(l=>{const current=places.get(l.code);return current&&current.name===l.name?{...l,floor:current.floor,description:current.description,status:current.status}:l;})};
+}
 export function validateDataset(raw:unknown):{data:Dataset;warnings:string[]}{
  const d=raw as Dataset;if(!d||d.version!=='1.0'||!code(d.event))throw new Error('資料版本或考試代碼無效');
  if(!Array.isArray(d.students)||!d.students.length||d.students.length>5000||!Array.isArray(d.schedule)||!d.schedule.length||d.schedule.length>5000||!Array.isArray(d.arrangements)||d.arrangements.length>25000||!Array.isArray(d.locations)||d.locations.length>500)throw new Error('資料表缺漏或超出匯入容量');
- const ids=new Map<string,Student>(),seats=new Set<string>(),classes=new Set<string>();
- for(const s of d.students){if(!nonempty(s.id,40)||!nonempty(s.name,60)||!nonempty(s.classroom,30)||!Number.isInteger(s.grade)||s.grade<1||s.grade>6||!Number.isInteger(s.seat)||s.seat<1||s.seat>999)throw new Error('學生欄位、年級或座號無效');
-  if(ids.has(s.id)||seats.has(`${s.classroom}|${s.seat}`))throw new Error('學號或同班座號重複');ids.set(s.id,s);seats.add(`${s.classroom}|${s.seat}`);classes.add(s.classroom);}
- const places=new Set<string>(),loccodes=new Set<string>(),warnings:string[]=[];
- for(const l of d.locations){if(!nonempty(l.code,80)||!nonempty(l.name,80)||typeof l.description!=='string'||l.description.length>500||!['已對照','待核對'].includes(l.status)||l.floor!==null&&(!Number.isInteger(l.floor)||l.floor< -10||l.floor>100))throw new Error('教室位置格式無效');
-  if(places.has(l.name)||loccodes.has(l.code))throw new Error('地點代碼或名稱重複');places.add(l.name);loccodes.add(l.code);
-  if(l.floor===null){if(l.status!=='待核對')throw new Error('未填樓層請標記待核對');warnings.push(`${l.name}：樓層待核對`);}}
+ const students=validateStudents(d.students),locations=validateLocations(d.locations),warnings=locations.warnings;
+ const ids=new Map(students.map(s=>[s.id,s])),classes=new Set(students.map(s=>s.classroom)),places=new Set(locations.data.map(l=>l.name));
  for(const c of classes)if(!places.has(c))throw new Error(`教室位置缺少班級 ${c}`);
  const sessions=new Map<string,ExamSession>(),ranges=new Map<string,ExamSession[]>(),titles=new Set<string>();
  for(const s of d.schedule){if(!code(s.id)||s.event!==d.event||!nonempty(s.title,120)||!classes.has(s.classroom)||!nonempty(s.period,40)||!nonempty(s.subject,100)||!/^\d{4}-\d{2}-\d{2}$/.test(s.date)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(s.start)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(s.end)||s.start>=s.end||!['考試','自習'].includes(s.kind))throw new Error('考程欄位、日期或時間無效');

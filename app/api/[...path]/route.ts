@@ -1,8 +1,10 @@
 import { ApiError,adminCredential,authenticate,cookie,database,digest,examAccess,limited,passwordHash,randomToken,requireAdmin,sameOrigin,verify,type User } from '@/lib/auth';
 import { confirmEntries,initialEntries,validateDataset,type Dataset,type Entries } from '@/lib/model';
+import {corrected,referenceRequest,examImport} from '@/lib/reference-store';
+import {resetAttendance} from '@/lib/reset-attendance';
 export const dynamic='force-dynamic';
-type Exam={id:string;title:string;data:string;closed:number;code_hash:string;code_version:number;created_at:string};
-type Board={exam_id:string;session_id:string;revision:number;entries:string;actor:string;updated_at:string;request_id:string};
+type Exam={id:string;title:string;data:string;closed:number;draft:number;reference_info:string;code_hash:string;code_version:number;created_at:string};
+type Board={exam_id:string;session_id:string;revision:number;confirmed:number;entries:string;actor:string;updated_at:string;request_id:string};
 function json(value:unknown,status=200,headers:Record<string,string>={}){return Response.json(value,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...headers}});}
 async function getExam(id:string){const e=await database().prepare('SELECT * FROM exams WHERE id=?').bind(id).first<Exam>();if(!e)throw new ApiError(404,'找不到這次考試');return e;}
 async function body(req:Request){if(Number(req.headers.get('content-length')||0)>2500000)throw new ApiError(413,'資料太大');const text=await req.text();if(text.length>2500000)throw new ApiError(413,'資料太大');try{return JSON.parse(text);}catch{throw new ApiError(400,'資料格式不正確');}}
@@ -13,7 +15,7 @@ async function handle(req:Request,parts:string[]){
  const submitted=req.method==='POST'?await body(req):null;
  if(req.method==='POST')sameOrigin(req);
  if(p==='bootstrap'&&req.method==='GET'){
-  const user=await authenticate(req,true);const events=await db.prepare(user?.role==='admin'?'SELECT id,title,closed FROM exams ORDER BY created_at DESC':'SELECT id,title,closed FROM exams WHERE closed=0 ORDER BY created_at DESC').all();
+  const user=await authenticate(req,true);const events=await db.prepare(user?.role==='admin'?'SELECT id,title,closed,draft FROM exams ORDER BY created_at DESC':'SELECT id,title,closed,draft FROM exams WHERE closed=0 AND draft=0 ORDER BY created_at DESC').all();
   return json({user:user?{role:user.role,name:user.name,event:user.exam_id}:null,events:events.results});
  }
  if(p==='login'&&req.method==='POST'){
@@ -26,7 +28,7 @@ async function handle(req:Request,parts:string[]){
    role='admin';name='管理者';version=credential.revision;seconds=14400;
   }else{
    if(typeof b.event!=='string'||typeof b.name!=='string'||!b.name.trim()||b.name.trim().length>30)throw new ApiError(400,'請選擇考試並填寫老師姓名');
-   const e=await db.prepare('SELECT * FROM exams WHERE id=? AND closed=0').bind(b.event).first<Exam>();
+   const e=await db.prepare('SELECT * FROM exams WHERE id=? AND closed=0 AND draft=0').bind(b.event).first<Exam>();
    if(!e)throw new ApiError(403,'此考試尚未開放或已結案');
    eid=e.id;version=e.code_version;name=b.name.trim();
   }
@@ -37,6 +39,10 @@ async function handle(req:Request,parts:string[]){
   ]);return json({ok:true},200,{'Set-Cookie':cookie(req,token,seconds)});
  }
  const user=(await authenticate(req)) as User;
+ if(p==='references'){requireAdmin(user);return json(await referenceRequest(req.method,submitted));}
+ if(p==='exam/import'&&req.method==='POST'){requireAdmin(user);return json(await examImport(submitted));}
+ if(p==='reset'&&req.method==='POST'){requireAdmin(user);return json(await resetAttendance(submitted,user));}
+ if(p==='exam/data'&&req.method==='GET'){requireAdmin(user);const e=await getExam(url.searchParams.get('event')||'');return json({data:await corrected(JSON.parse(e.data)),draft:!!e.draft,version:e.code_version,references:JSON.parse(e.reference_info)});}
  if(p==='logout'&&req.method==='POST'){await db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').bind(user.token_hash).run();return json({ok:true},200,{'Set-Cookie':cookie(req,'',0)});}
  if(p==='admin/password'&&req.method==='POST'){
   requireAdmin(user);await limited(req,true);const b=submitted;
@@ -69,35 +75,39 @@ async function handle(req:Request,parts:string[]){
  }
  if(p==='settings'&&req.method==='POST'){
   requireAdmin(user);const b=submitted;if(typeof b.event!=='string')throw new ApiError(400,'請選考試');await getExam(b.event);
-  if(b.action==='close'||b.action==='reopen')await db.prepare('UPDATE exams SET closed=?,code_version=code_version+1 WHERE id=?').bind(b.action==='close'?1:0,b.event).run();
+  if(b.action==='open'){
+   const result=await db.prepare('UPDATE exams SET draft=0,code_version=code_version+1 WHERE id=? AND draft=1 AND code_version=?').bind(b.event,b.version).run();
+   if(!result.meta.changes)throw new ApiError(409,'考試資料已更新，請重新載入確認');
+  }else if(b.action==='close'||b.action==='reopen')await db.prepare('UPDATE exams SET closed=?,code_version=code_version+1 WHERE id=? AND draft=0').bind(b.action==='close'?1:0,b.event).run();
   else throw new ApiError(400,'未知操作');return json({ok:true});
  }
- const event=url.searchParams.get('event')||'';examAccess(user,event);const e=await getExam(event),data=JSON.parse(e.data) as Dataset;
+ const event=url.searchParams.get('event')||'';examAccess(user,event);const e=await getExam(event),data=await corrected(JSON.parse(e.data) as Dataset);
  if(p==='dashboard'&&req.method==='GET'){
-  const rows=await db.prepare('SELECT session_id,revision,entries,actor,updated_at FROM boards WHERE exam_id=?').bind(event).all<Board>();
-  const progress=Object.fromEntries(rows.results.map(b=>[b.session_id,{revision:b.revision,actor:b.actor,updatedAt:b.updated_at,counts:Object.values(JSON.parse(b.entries) as Entries).reduce((a,x)=>({...a,[x.status]:(a[x.status]||0)+1}),{} as Record<string,number>)}]));
+  const rows=await db.prepare('SELECT session_id,revision,confirmed,entries,actor,updated_at FROM boards WHERE exam_id=?').bind(event).all<Board>();
+  const progress=Object.fromEntries(rows.results.filter(b=>b.confirmed).map(b=>[b.session_id,{revision:b.revision,actor:b.actor,updatedAt:b.updated_at,counts:Object.values(JSON.parse(b.entries) as Entries).reduce((a,x)=>({...a,[x.status]:(a[x.status]||0)+1}),{} as Record<string,number>)}]));
   const counts=Object.fromEntries([...new Set(data.students.map(s=>s.classroom))].map(c=>[c,data.students.filter(s=>s.classroom===c).length]));
-  return json({event:e.id,title:e.title,closed:!!e.closed,schedule:data.schedule,locations:data.locations,counts,progress});
+  return json({event:e.id,title:e.title,closed:!!e.closed,draft:!!e.draft,version:e.code_version,versions:Object.fromEntries(rows.results.map(b=>[b.session_id,b.revision])),grades:Object.fromEntries(data.students.map(s=>[s.classroom,s.grade])),schedule:data.schedule,locations:data.locations,counts,progress});
  }
  const sid=url.searchParams.get('session')||'',ses=data.schedule.find(s=>s.id===sid);
  if(p==='board'&&req.method==='GET'){
   if(!ses||ses.kind!=='考試')throw new ApiError(404,'此時段不需點名');
   const b=await db.prepare('SELECT * FROM boards WHERE exam_id=? AND session_id=?').bind(event,sid).first<Board>();
-  return json({session:ses,closed:!!e.closed,students:data.students.filter(s=>s.classroom===ses.classroom).sort((a,b)=>a.seat-b.seat),arrangements:data.arrangements.filter(a=>a.session===sid),entries:b?JSON.parse(b.entries):initialEntries(data,ses),revision:b?.revision||0,actor:b?.actor||'',updatedAt:b?.updated_at||''});
+  return json({session:ses,closed:!!e.closed||!!e.draft,confirmed:!!b?.confirmed,students:data.students.filter(s=>s.classroom===ses.classroom).sort((a,b)=>a.seat-b.seat),arrangements:data.arrangements.filter(a=>a.session===sid),entries:b?JSON.parse(b.entries):initialEntries(data,ses),revision:b?.revision||0,actor:b?.actor||'',updatedAt:b?.updated_at||''});
  }
  if(p==='board'&&req.method==='POST'){
-  if(!ses||ses.kind!=='考試')throw new ApiError(404,'此時段不需點名');if(e.closed)throw new ApiError(409,'考試已結案，請先重新開放');
+  if(!ses||ses.kind!=='考試')throw new ApiError(404,'此時段不需點名');if(e.closed||e.draft)throw new ApiError(409,'考試尚未開放或已結案');
   const b=submitted;if(!Number.isInteger(b.revision)||b.revision<0||typeof b.requestId!=='string'||!/^[a-f0-9-]{36}$/.test(b.requestId))throw new ApiError(400,'提交版本無效');
-  let entries:Entries;try{entries=confirmEntries(data,ses,b.entries);}catch(err){throw new ApiError(400,(err as Error).message);}
+  const previous=await db.prepare('SELECT entries FROM boards WHERE exam_id=? AND session_id=?').bind(event,sid).first<{entries:string}>();
+  let entries:Entries;try{entries=confirmEntries(data,ses,b.entries,previous?JSON.parse(previous.entries):undefined);}catch(err){throw new ApiError(400,(err as Error).message);}
   const payload=JSON.stringify(entries),hash=await digest(JSON.stringify([event,sid,b.revision,entries])),now=new Date().toISOString();
   const prior=await db.prepare('SELECT revision,body_hash,principal FROM audits WHERE request_id=?').bind(b.requestId).first<{revision:number;body_hash:string;principal:string}>();
   if(prior){if(prior.body_hash!==hash||prior.principal!==user.token_hash)throw new ApiError(409,'提交識別碼已被使用');return json({ok:true,revision:prior.revision,replayed:true});}
   await db.batch([
    db.prepare(`INSERT INTO boards(exam_id,session_id,revision,entries,actor,updated_at,request_id)
-    SELECT ?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM exams WHERE id=? AND closed=0 AND code_version=? AND (?='admin' OR code_version=?))
+    SELECT ?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM exams WHERE id=? AND closed=0 AND draft=0 AND code_version=? AND (?='admin' OR code_version=?))
     AND (?=0 OR EXISTS(SELECT 1 FROM boards WHERE exam_id=? AND session_id=? AND revision=?))
     AND NOT EXISTS(SELECT 1 FROM audits WHERE request_id=?)
-    ON CONFLICT(exam_id,session_id) DO UPDATE SET revision=excluded.revision,entries=excluded.entries,actor=excluded.actor,updated_at=excluded.updated_at,request_id=excluded.request_id WHERE boards.revision=?`)
+    ON CONFLICT(exam_id,session_id) DO UPDATE SET revision=excluded.revision,entries=excluded.entries,confirmed=1,actor=excluded.actor,updated_at=excluded.updated_at,request_id=excluded.request_id WHERE boards.revision=?`)
     .bind(event,sid,b.revision+1,payload,user.name,now,b.requestId,event,e.code_version,user.role,user.code_version,b.revision,event,sid,b.revision,b.requestId,b.revision),
    db.prepare(`INSERT OR IGNORE INTO audits(request_id,exam_id,session_id,revision,entries,actor,at,body_hash,principal) SELECT request_id,exam_id,session_id,revision,entries,actor,updated_at,?,? FROM boards WHERE exam_id=? AND session_id=? AND request_id=?`)
     .bind(hash,user.token_hash,event,sid,b.requestId)
@@ -107,13 +117,13 @@ async function handle(req:Request,parts:string[]){
   return json({ok:true,revision:saved.revision,updatedAt:now,actor:user.name});
  }
  if(p==='history'&&req.method==='GET'){
-  requireAdmin(user);const rows=await db.prepare('SELECT revision,entries,actor,at FROM audits WHERE exam_id=? AND session_id=? ORDER BY revision DESC LIMIT 50').bind(event,sid).all();return json({history:rows.results.map(r=>({...r,entries:JSON.parse(r.entries as string)}))});
+  requireAdmin(user);const rows=await db.prepare('SELECT revision,entries,actor,at,action FROM audits WHERE exam_id=? AND session_id=? ORDER BY revision DESC LIMIT 50').bind(event,sid).all();return json({history:rows.results.map(r=>({...r,entries:JSON.parse(r.entries as string)}))});
  }
  if(p==='export'&&req.method==='GET'){
   requireAdmin(user);
   // D1 batch supplies a consistent snapshot of both the immutable exam and attendance.
-  const snap=await db.batch([db.prepare('SELECT data FROM exams WHERE id=?').bind(event),db.prepare('SELECT session_id,entries,revision,actor,updated_at FROM boards WHERE exam_id=?').bind(event)]);
-  return json({data:JSON.parse((snap[0].results[0] as {data:string}).data),boards:(snap[1].results as Board[]).map(r=>({...r,entries:JSON.parse(r.entries as string)})),exportedAt:new Date().toISOString()});
+  const snap=await db.batch([db.prepare('SELECT data FROM exams WHERE id=?').bind(event),db.prepare('SELECT session_id,entries,revision,confirmed,actor,updated_at FROM boards WHERE exam_id=?').bind(event)]);
+  return json({data:await corrected(JSON.parse((snap[0].results[0] as {data:string}).data)),boards:(snap[1].results as Board[]).map(r=>({...r,entries:JSON.parse(r.entries as string)})),exportedAt:new Date().toISOString()});
  }
  throw new ApiError(404,'找不到此操作');
 }

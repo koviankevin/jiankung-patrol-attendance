@@ -42,7 +42,8 @@ const arrPreview=(await call('exam/import',{kind:'arrangements',event,rows:arran
 await call('exam/import',{kind:'arrangements',event,rows:arrangements,version:arrPreview.version,commit:true},admin);
 await call('settings',{event,action:'open',version:arrPreview.version},admin,409);
 let dash=(await call('dashboard?event='+event,undefined,admin)).data;
-await call('settings',{event,action:'open',version:dash.version},admin);
+const checked=(await call('exam/check',{event,grades:[1,4]},admin)).data;
+await call('settings',{event,action:'open',version:dash.version,grades:checked.grades,checkToken:checked.token,acknowledgeWarnings:true},admin);
 await call('exam/import',{kind:'arrangements',event,rows:[]},admin,409);
 let teacher=(await call('login',{event,name:'老師'})).cookie;
 await call('references',undefined,teacher,403);await call('reset',{event},teacher,403);

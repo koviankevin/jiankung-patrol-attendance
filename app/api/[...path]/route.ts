@@ -1,6 +1,7 @@
 import { ApiError,adminCredential,authenticate,cookie,database,digest,examAccess,limited,passwordHash,randomToken,requireAdmin,sameOrigin,verify,type User } from '@/lib/auth';
 import { confirmEntries,initialEntries,validateDataset,type Dataset,type Entries } from '@/lib/model';
 import {corrected,referenceRequest,examImport,renameExam} from '@/lib/reference-store';
+import {preflight,openCheckedExam,duplicateExam} from '@/lib/exam-lifecycle';
 import {resetAttendance} from '@/lib/reset-attendance';
 export const dynamic='force-dynamic';
 type Exam={id:string;title:string;data:string;closed:number;draft:number;reference_info:string;code_hash:string;code_version:number;created_at:string};
@@ -15,7 +16,7 @@ async function handle(req:Request,parts:string[]){
  const submitted=req.method==='POST'?await body(req):null;
  if(req.method==='POST')sameOrigin(req);
  if(p==='bootstrap'&&req.method==='GET'){
-  const user=await authenticate(req,true);const events=await db.prepare(user?.role==='admin'?'SELECT id,title,closed,draft FROM exams ORDER BY created_at DESC':'SELECT id,title,closed,draft FROM exams WHERE closed=0 AND draft=0 ORDER BY created_at DESC').all();
+  const user=await authenticate(req,true);const events=await db.prepare("SELECT id,title,closed,draft,(SELECT MAX(json_extract(value,'$.date')) FROM json_each(exams.data,'$.schedule')) AS endDate FROM exams "+(user?.role==='admin'?'':'WHERE closed=0 AND draft=0 ')+'ORDER BY created_at DESC').all();
   return json({user:user?{role:user.role,name:user.name,event:user.exam_id}:null,events:events.results});
  }
  if(p==='login'&&req.method==='POST'){
@@ -41,6 +42,8 @@ async function handle(req:Request,parts:string[]){
  const user=(await authenticate(req)) as User;
  if(p==='references'){requireAdmin(user);return json(await referenceRequest(req.method,submitted));}
  if(p==='exam/import'&&req.method==='POST'){requireAdmin(user);return json(await examImport(submitted));}
+ if(p==='exam/check'&&req.method==='POST'){requireAdmin(user);return json(await preflight(submitted));}
+ if(p==='exam/copy'&&req.method==='POST'){requireAdmin(user);return json(await duplicateExam(submitted));}
  if(p==='exam/name'&&req.method==='POST'){requireAdmin(user);return json(await renameExam(submitted));}
  if(p==='reset'&&req.method==='POST'){requireAdmin(user);return json(await resetAttendance(submitted,user));}
  if(p==='exam/data'&&req.method==='GET'){requireAdmin(user);const e=await getExam(url.searchParams.get('event')||'');return json({data:await corrected(JSON.parse(e.data)),draft:!!e.draft,version:e.code_version,references:JSON.parse(e.reference_info)});}
@@ -77,8 +80,8 @@ async function handle(req:Request,parts:string[]){
  if(p==='settings'&&req.method==='POST'){
   requireAdmin(user);const b=submitted;if(typeof b.event!=='string')throw new ApiError(400,'請選考試');await getExam(b.event);
   if(b.action==='open'){
-   const result=await db.prepare('UPDATE exams SET draft=0,code_version=code_version+1 WHERE id=? AND draft=1 AND code_version=?').bind(b.event,b.version).run();
-   if(!result.meta.changes)throw new ApiError(409,'考試資料已更新，請重新載入確認');
+   const current=await getExam(b.event);if(current.code_version!==b.version)throw new ApiError(409,'考試資料已更新，請重新載入確認');
+   return json(await openCheckedExam(b));
   }else if(b.action==='close'||b.action==='reopen')await db.prepare('UPDATE exams SET closed=?,code_version=code_version+1 WHERE id=? AND draft=0').bind(b.action==='close'?1:0,b.event).run();
   else throw new ApiError(400,'未知操作');return json({ok:true});
  }

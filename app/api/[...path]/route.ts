@@ -1,5 +1,4 @@
-import { env } from 'cloudflare:workers';
-import { ApiError,authenticate,cookie,database,digest,examAccess,limited,passwordHash,randomToken,requireAdmin,sameOrigin,verify,type User } from '@/lib/auth';
+import { ApiError,adminCredential,authenticate,cookie,database,digest,examAccess,limited,passwordHash,randomToken,requireAdmin,sameOrigin,verify,type User } from '@/lib/auth';
 import { confirmEntries,initialEntries,validateDataset,type Dataset,type Entries } from '@/lib/model';
 export const dynamic='force-dynamic';
 type Exam={id:string;title:string;data:string;closed:number;code_hash:string;code_version:number;created_at:string};
@@ -9,25 +8,26 @@ async function getExam(id:string){const e=await database().prepare('SELECT * FRO
 async function body(req:Request){if(Number(req.headers.get('content-length')||0)>2500000)throw new ApiError(413,'資料太大');const text=await req.text();if(text.length>2500000)throw new ApiError(413,'資料太大');try{return JSON.parse(text);}catch{throw new ApiError(400,'資料格式不正確');}}
 async function handle(req:Request,parts:string[]){
  const db=database(),p=parts.join('/'),url=new URL(req.url);
- if(req.method==='POST')sameOrigin(req);
  // Consume each submitted body before returning permission or state errors.
  // This also keeps the preview transport usable after a rejected submission.
  const submitted=req.method==='POST'?await body(req):null;
+ if(req.method==='POST')sameOrigin(req);
  if(p==='bootstrap'&&req.method==='GET'){
   const user=await authenticate(req,true);const events=await db.prepare(user?.role==='admin'?'SELECT id,title,closed FROM exams ORDER BY created_at DESC':'SELECT id,title,closed FROM exams WHERE closed=0 ORDER BY created_at DESC').all();
   return json({user:user?{role:user.role,name:user.name,event:user.exam_id}:null,events:events.results});
  }
  if(p==='login'&&req.method==='POST'){
-  const b=submitted;await limited(req,b.role==='admin');if(typeof b.password!=='string'||b.password.length>200)throw new ApiError(400,'請輸入密碼或通行碼');
+  const b=submitted;await limited(req,b.role==='admin');
   let role='teacher',name='',eid:null|string=null,version=0,seconds=43200;
   if(b.role==='admin'){
-   if(!env.ADMIN_PASSWORD_HASH)throw new ApiError(503,'管理密碼尚未設定');
-   if(!await verify(b.password,env.ADMIN_PASSWORD_HASH))throw new ApiError(401,'密碼或通行碼不正確');
-   role='admin';name='管理者';seconds=14400;
+   if(typeof b.password!=='string'||!b.password||b.password.length>200)throw new ApiError(400,'請輸入管理密碼');
+   const credential=await adminCredential();
+   if(!await verify(b.password,credential.password_hash))throw new ApiError(401,'管理密碼不正確');
+   role='admin';name='管理者';version=credential.revision;seconds=14400;
   }else{
    if(typeof b.event!=='string'||typeof b.name!=='string'||!b.name.trim()||b.name.trim().length>30)throw new ApiError(400,'請選擇考試並填寫老師姓名');
    const e=await db.prepare('SELECT * FROM exams WHERE id=? AND closed=0').bind(b.event).first<Exam>();
-   if(!e||!await verify(b.password,e.code_hash))throw new ApiError(401,'密碼或通行碼不正確');
+   if(!e)throw new ApiError(403,'此考試尚未開放或已結案');
    eid=e.id;version=e.code_version;name=b.name.trim();
   }
   const token=randomToken();await db.batch([
@@ -38,6 +38,24 @@ async function handle(req:Request,parts:string[]){
  }
  const user=(await authenticate(req)) as User;
  if(p==='logout'&&req.method==='POST'){await db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').bind(user.token_hash).run();return json({ok:true},200,{'Set-Cookie':cookie(req,'',0)});}
+ if(p==='admin/password'&&req.method==='POST'){
+  requireAdmin(user);await limited(req,true);const b=submitted;
+  if(typeof b.currentPassword!=='string'||!b.currentPassword||b.currentPassword.length>200)throw new ApiError(400,'請輸入目前管理密碼');
+  if(typeof b.newPassword!=='string'||b.newPassword.length<4||b.newPassword.length>200||!b.newPassword.trim())throw new ApiError(400,'新密碼需4至200個字元');
+  if(b.newPassword!==b.confirmPassword)throw new ApiError(400,'兩次輸入的新密碼不一致');
+  const credential=await adminCredential();
+  if(!await verify(b.currentPassword,credential.password_hash))throw new ApiError(400,'目前管理密碼不正確');
+  if(b.newPassword===b.currentPassword)throw new ApiError(400,'新密碼需與目前密碼不同');
+  const hash=await passwordHash(b.newPassword);
+  // Compare revisions so concurrent password changes cannot overwrite each other.
+  const results=await db.batch([
+   db.prepare("INSERT INTO admin_credentials(id,password_hash,revision,updated_at) VALUES('admin',?,?,?) ON CONFLICT(id) DO UPDATE SET password_hash=excluded.password_hash,revision=excluded.revision,updated_at=excluded.updated_at WHERE admin_credentials.revision=?")
+    .bind(hash,credential.revision+1,new Date().toISOString(),credential.revision),
+   db.prepare("DELETE FROM auth_sessions WHERE role='admin' AND code_version<(SELECT revision FROM admin_credentials WHERE id='admin')")
+  ]);
+  if(!results[0].meta.changes)throw new ApiError(409,'管理密碼已被更新，請使用最新密碼重新登入');
+  return json({ok:true},200,{'Set-Cookie':cookie(req,'',0)});
+ }
  if(p==='import'&&req.method==='POST'){
   requireAdmin(user);const b=submitted;let result;try{result=validateDataset(b.data);}catch(e){throw new ApiError(400,(e as Error).message);}
   const existing=await db.prepare('SELECT id,closed FROM exams WHERE id=?').bind(result.data.event).first();
@@ -45,18 +63,14 @@ async function handle(req:Request,parts:string[]){
   if(existing&&(started?.n||existing.closed))throw new ApiError(409,'此考試已點名或結案，無法取代名冊與考程');
   const summary={event:result.data.event,title:result.data.schedule[0].title,students:result.data.students.length,classes:new Set(result.data.students.map(s=>s.classroom)).size,sessions:result.data.schedule.filter(s=>s.kind==='考試').length,arrangements:result.data.arrangements.length,warnings:result.warnings,replacing:!!existing};
   if(!b.commit)return json(summary);
-  if(typeof b.code!=='string'||b.code.length<6||b.code.length>64)throw new ApiError(400,'老師通行碼需6至64個字元');
-  const hash=await passwordHash(b.code),data=JSON.stringify(result.data);
-  const saved=await db.prepare('INSERT INTO exams(id,title,data,code_hash,created_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,data=excluded.data,code_hash=excluded.code_hash,code_version=exams.code_version+1 WHERE exams.closed=0 AND NOT EXISTS(SELECT 1 FROM boards WHERE exam_id=exams.id)').bind(result.data.event,summary.title,data,hash,new Date().toISOString()).run();
+  const data=JSON.stringify(result.data);
+  const saved=await db.prepare('INSERT INTO exams(id,title,data,code_hash,created_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,data=excluded.data,code_hash=excluded.code_hash,code_version=exams.code_version+1 WHERE exams.closed=0 AND NOT EXISTS(SELECT 1 FROM boards WHERE exam_id=exams.id)').bind(result.data.event,summary.title,data,'',new Date().toISOString()).run();
   if(!saved.meta.changes)throw new ApiError(409,'其他人已開始點名，匯入未套用');return json({...summary,ok:true});
  }
  if(p==='settings'&&req.method==='POST'){
   requireAdmin(user);const b=submitted;if(typeof b.event!=='string')throw new ApiError(400,'請選考試');await getExam(b.event);
   if(b.action==='close'||b.action==='reopen')await db.prepare('UPDATE exams SET closed=?,code_version=code_version+1 WHERE id=?').bind(b.action==='close'?1:0,b.event).run();
-  else if(b.action==='code'){
-   if(typeof b.code!=='string'||b.code.length<6||b.code.length>64)throw new ApiError(400,'老師通行碼需6至64個字元');
-   await db.prepare('UPDATE exams SET code_hash=?,code_version=code_version+1 WHERE id=?').bind(await passwordHash(b.code),b.event).run();
-  }else throw new ApiError(400,'未知操作');return json({ok:true});
+  else throw new ApiError(400,'未知操作');return json({ok:true});
  }
  const event=url.searchParams.get('event')||'';examAccess(user,event);const e=await getExam(event),data=JSON.parse(e.data) as Dataset;
  if(p==='dashboard'&&req.method==='GET'){

@@ -21,3 +21,7 @@ export const sessions=sqliteTable('auth_sessions',{
 export const attempts=sqliteTable('login_attempts',{
  key:text('key').primaryKey(),count:integer('count').notNull(),until:integer('until').notNull(),
 });
+export const adminCredentials=sqliteTable('admin_credentials',{
+ id:text('id').primaryKey(),passwordHash:text('password_hash').notNull(),
+ revision:integer('revision').notNull(),updatedAt:text('updated_at').notNull(),
+});

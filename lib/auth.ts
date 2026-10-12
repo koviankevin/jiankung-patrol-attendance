@@ -14,10 +14,17 @@ export async function verify(value:string,expected:string){
  for(let i=0;i<expected.length;i++)diff|=got.charCodeAt(i)^expected.charCodeAt(i);return diff===0;
 }
 export type User={token_hash:string;role:'admin'|'teacher';name:string;exam_id:string|null;code_version:number;expires:number};
+export async function adminCredential(){
+ const saved=await database().prepare("SELECT password_hash,revision FROM admin_credentials WHERE id='admin'").first<{password_hash:string;revision:number}>();
+ if(saved)return saved;
+ if(!env.ADMIN_PASSWORD_HASH)throw new ApiError(503,'管理密碼尚未設定');
+ return {password_hash:env.ADMIN_PASSWORD_HASH,revision:0};
+}
 export async function authenticate(req:Request,optional=false):Promise<User|null>{
  const token=req.headers.get('cookie')?.match(/(?:^|;\s*)patrol_session=([a-f0-9]{64})(?:;|$)/)?.[1];
  const user=token?await database().prepare('SELECT * FROM auth_sessions WHERE token_hash=? AND expires>?').bind(await digest(token),Date.now()).first<User>():null;
  let valid=!!user;
+ if(user?.role==='admin')valid=user.code_version===(await adminCredential()).revision;
  if(user?.role==='teacher'){
   const e=await database().prepare('SELECT closed,code_version FROM exams WHERE id=?').bind(user.exam_id).first<{closed:number;code_version:number}>();valid=!!e&&!e.closed&&e.code_version===user.code_version;
  }

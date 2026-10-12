@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 const base=process.env.TEST_URL||'http://127.0.0.1:5173';
 if(!['localhost','127.0.0.1'].includes(new URL(base).hostname))throw Error('Tests may run only on a local database');
 const creds={admin:process.env.TEST_ADMIN_PASSWORD||'Local-test-admin-2026'};
@@ -11,9 +10,10 @@ async function request(path,body,cookie='',expected=200){const r=await fetch(bas
 await request('dashboard?event=X',undefined,'',401);
 const admin=(await request('login',{role:'admin',password:creds.admin})).cookie;
 const preview=await request('import',{data},admin);assert.equal(preview.data.sessions,1);
-await request('import',{data,commit:true,code:'test-code-2026'},admin);
-const teacher=(await request('login',{event:data.event,name:'測試老師',password:'test-code-2026'})).cookie;
-const teacher2=(await request('login',{event:data.event,name:'另一位老師',password:'test-code-2026'})).cookie;
+await request('import',{data,commit:true},admin);
+await request('login',{event:data.event,name:'   '},'',400);
+const teacher=(await request('login',{event:data.event,name:'測試老師'})).cookie;
+const teacher2=(await request('login',{event:data.event,name:'另一位老師'})).cookie;
 await request('import',{data},teacher,403);
 await request('dashboard?event=OTHER',undefined,teacher,403);
 const path=`board?event=${data.event}&session=SESSION`;
@@ -28,16 +28,41 @@ const current=(await request(path,undefined,teacher)).data;assert.equal(current.
 current.entries['2'].status='出席';
 const concurrent=await Promise.all([teacher,teacher2].map(cookie=>fetch(base+'/api/'+path,{method:'POST',headers:{Origin:base,'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify({revision:1,requestId:crypto.randomUUID(),entries:current.entries})})));
 assert.deepEqual(concurrent.map(x=>x.status).sort(),[200,409]);checks++;
-await request('import',{data,commit:true,code:'test-code-2026'},admin,409);
+await request('import',{data,commit:true},admin,409);
 const snap=(await request('export?event='+data.event,undefined,admin)).data;assert.equal(snap.boards.length,1);assert.equal(snap.boards[0].revision,2);
 await request('export?event='+data.event,undefined,teacher,403);
-await request('settings',{event:data.event,action:'code',code:'changed-code'},admin);
-await request(path,undefined,teacher,401);
-const rotated=(await request('login',{event:data.event,name:'測試老師',password:'changed-code'})).cookie;
+await request('settings',{event:data.event,action:'code',code:'removed'},admin,400);
 await request('settings',{event:data.event,action:'close'},admin);
-await request(path,undefined,rotated,401);
+await request(path,undefined,teacher,401);
+await request('login',{event:data.event,name:'測試老師'},'',403);
 await request(path,{revision:2,requestId:crypto.randomUUID(),entries:current.entries},admin,409);
 await request('settings',{event:data.event,action:'reopen'},admin);
 await request(path,{revision:2,requestId:crypto.randomUUID(),entries:current.entries},admin);
 const history=(await request(`history?event=${data.event}&session=SESSION`,undefined,admin)).data;assert.equal(history.history.length,3);
-console.log(`${checks} API checks passed; concurrent writes, retry, authorization, export and closure verified.`);
+await request(path,undefined,teacher,401);
+const reopened=(await request('login',{event:data.event,name:'重新登入老師'})).cookie;
+await request(path,undefined,reopened);
+// Changing the persistent administrator password must revoke all old admin sessions,
+// preserve teacher access and records, and never fall back to the environment password.
+const otherAdmin=(await request('login',{role:'admin',password:creds.admin})).cookie;
+const newPassword='Updated-test-password-'+Date.now();
+const change={currentPassword:creds.admin,newPassword,confirmPassword:newPassword};
+await request('admin/password',change,'',401);
+await request('admin/password',change,reopened,403);
+await request('admin/password',{...change,currentPassword:'incorrect'},admin,400);
+await request('admin/password',{...change,confirmPassword:'mismatch'},admin,400);
+await request('admin/password',{...change,newPassword:'',confirmPassword:''},admin,400);
+await request('admin/password',{...change,newPassword:'abc',confirmPassword:'abc'},admin,400);
+const csrf=await fetch(base+'/api/admin/password',{method:'POST',headers:{Origin:'https://invalid.example','Content-Type':'application/json',Cookie:admin},body:JSON.stringify(change)});assert.equal(csrf.status,403);await csrf.json();checks++;
+const changed=await request('admin/password',change,admin);assert.equal(changed.cookie,'patrol_session=');
+await request('export?event='+data.event,undefined,admin,401);
+await request('export?event='+data.event,undefined,otherAdmin,401);
+await request('login',{role:'admin',password:creds.admin},'',401);
+await request(path,undefined,reopened);
+const newAdmin=(await request('login',{role:'admin',password:newPassword})).cookie;
+const preserved=(await request('export?event='+data.event,undefined,newAdmin)).data;assert.deepEqual(preserved.boards[0].entries,current.entries);
+// Restore the test password so repeated local runs remain independent.
+await request('admin/password',{currentPassword:newPassword,newPassword:creds.admin,confirmPassword:creds.admin},newAdmin);
+const restored=(await request('login',{role:'admin',password:creds.admin})).cookie;
+await request('logout',{},restored);
+console.log(`${checks} API checks passed; password changes, session revocation, code-free teacher entry, concurrent writes, export and closure verified.`);

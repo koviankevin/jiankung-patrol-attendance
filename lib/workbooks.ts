@@ -4,7 +4,7 @@ async function excel(){return (await import('exceljs')).default;}
 export type ImportKind='students'|'locations'|'schedule'|'arrangements';
 export const SHEETS={students:'學生名冊',locations:'教室位置',schedule:'考程',arrangements:'應試安排'} as const;
 const FIELDS:Record<string,string[]>={'學生名冊':['學號','姓名','年級','班級','座號'],'考程':['考試代碼','考試名稱','場次代碼','日期','班級','顯示節次','開始時間','結束時間','類型','科目'],'應試安排':['學號','場次代碼','安排','應試地點'],'教室位置':['地點代碼','班級或考場名稱','樓層','位置說明','核對狀態']};
-async function readParsed(file:File,names:string[]):Promise<Dataset>{
+async function readParsed(file:File,names:string[],optionalExamIdentity=false):Promise<Dataset>{
  if(!file.name.toLowerCase().endsWith('.xlsx')||file.size>8*1024*1024)throw new Error('請選擇8MB以內的標準.xlsx檔案');
  const Excel=await excel(),wb=new Excel.Workbook();
  // SpreadsheetML permits a namespace prefix, while ExcelJS expects unprefixed tags.
@@ -29,7 +29,7 @@ async function readParsed(file:File,names:string[]):Promise<Dataset>{
   zip.file(item.name,xml);
  }
  await wb.xlsx.load(await zip.generateAsync({type:'arraybuffer'}),{ignoreNodes:['tableParts','drawing','picture','extLst']});
- const fields=Object.fromEntries(names.map(name=>[name,FIELDS[name]]));
+ const fields=Object.fromEntries(names.map(name=>[name,optionalExamIdentity&&name==='考程'?FIELDS[name].filter(k=>!['考試代碼','考試名稱'].includes(k)||(wb.getWorksheet(name)?.getRow(1).values as unknown[]|undefined)?.includes(k)):FIELDS[name]]));
  const tables:Record<string,Record<string,unknown>[]>={};
  for(const [name,needed] of Object.entries(fields)){
   const s=wb.getWorksheet(name);if(!s)throw new Error(`缺少「${name}」工作表`);
@@ -48,16 +48,17 @@ async function readParsed(file:File,names:string[]):Promise<Dataset>{
  return data as Dataset;
 }
 export async function readStandard(file:File){return validateDataset(await readParsed(file,Object.values(SHEETS))).data;}
-export async function readPart(file:File,kind:ImportKind){return (await readParsed(file,[SHEETS[kind]]))[kind];}
+export async function readPart(file:File,kind:ImportKind){return (await readParsed(file,[SHEETS[kind]],true))[kind];}
 export async function downloadPart(kind:ImportKind,rows:Dataset[ImportKind]=[],prefix='空白範本'){
  const Excel=await excel(),wb=new Excel.Workbook(),sheet=wb.addWorksheet(SHEETS[kind]);
- const keys={students:['id','name','grade','classroom','seat'],locations:['code','name','floor','description','status'],schedule:['event','title','id','date','classroom','period','start','end','kind','subject'],arrangements:['id','session','arrangement','location']}[kind];
- sheet.addRow(FIELDS[SHEETS[kind]]);
+ const simple=kind==='schedule'&&!rows.length;
+ const keys={students:['id','name','grade','classroom','seat'],locations:['code','name','floor','description','status'],schedule:['event','title','id','date','classroom','period','start','end','kind','subject'],arrangements:['id','session','arrangement','location']}[kind].filter(k=>!simple||!['event','title'].includes(k));
+ sheet.addRow(FIELDS[SHEETS[kind]].filter(k=>!simple||!['考試代碼','考試名稱'].includes(k)));
  for(const row of rows){sheet.addRow(keys.map(key=>{const value=(row as unknown as Record<string,unknown>)[key];if(kind==='schedule'&&key==='date')return new Date(value+'T00:00:00Z');if(kind==='schedule'&&['start','end'].includes(key)){const [h,m]=String(value).split(':').map(Number);return (h*60+m)/1440;}return value;}));}
  sheet.views=[{state:'frozen',ySplit:1}];sheet.getRow(1).font={bold:true,color:{argb:'FFFFFFFF'}};sheet.getRow(1).fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF234F49'}};sheet.getRow(1).height=28;
  sheet.columns.forEach((column,i)=>{column.width=keys[i]==='description'?40:keys[i]==='name'||keys[i]==='title'?24:18;if(keys[i]==='date')column.numFmt='yyyy-mm-dd';if(kind==='schedule'&&['start','end'].includes(keys[i]))column.numFmt='hh:mm';});
  if(kind==='students')sheet.getCell('C1').note='年級：國一至國三填1至3，高一至高三填4至6。';
- if(kind==='schedule')sheet.getCell('C1').note='場次代碼不可重複；跨節考試只填一列，使用完整開始與結束時間。';
+ if(kind==='schedule')sheet.getRow(1).getCell(keys.indexOf('id')+1).note='考試名稱在網站填寫，考試代碼由系統產生。場次代碼不可重複；跨節考試只填一列，使用完整開始與結束時間。';
  if(kind==='arrangements')sheet.getCell('C1').note='安排填原班、抽離或免到考。學號及場次代碼須對應本次考試；空白資料表表示沒有特殊安排。';
  const bytes=await wb.xlsx.writeBuffer(),url=URL.createObjectURL(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));const a=document.createElement('a');a.href=url;a.download=`${prefix}_${SHEETS[kind]}.xlsx`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
 }

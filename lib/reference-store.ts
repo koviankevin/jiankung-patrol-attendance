@@ -38,9 +38,21 @@ export async function examImport(b:any){
   const refs=await references();if(!refs.students||!refs.locations)throw new ApiError(400,'請先匯入學生名單與教室配置');
   if(refs.students.year!==refs.locations.year)throw new ApiError(400,'學生名單與教室配置的學年度不同，請先核對');
   if(!Array.isArray(b.rows)||!b.rows.length)throw new ApiError(400,'考程不可空白');
+  let rows=b.rows;
+  if(b.createOnly&&b.title!==undefined){
+   if(typeof b.title!=='string'||!b.title.trim()||b.title.trim().length>120)throw new ApiError(400,'請填寫120字以內的考試名稱');
+   if(b.commit&&(typeof b.generatedEvent!=='string'||!/^EXAM-[a-f0-9-]{36}$/.test(b.generatedEvent)))throw new ApiError(400,'請先預覽考程再建立考試');
+   const event=b.commit?b.generatedEvent:'EXAM-'+crypto.randomUUID();
+   rows=rows.map((s:ExamSession)=>({...s,event,title:b.title.trim()}));
+  }else if(b.targetEvent!==undefined){
+   const target=await db.prepare('SELECT title FROM exams WHERE id=?').bind(b.targetEvent).first<{title:string}>();
+   if(!target)throw new ApiError(409,'找不到目前管理的考試，請重新選擇');
+   if(rows.some((s:ExamSession)=>s.event&&s.event!==b.targetEvent))throw new ApiError(409,'檔案考試代碼與目前管理考試不同，請確認檔案。');
+   rows=rows.map((s:ExamSession)=>({...s,event:b.targetEvent,title:target.title}));
+  }
   const info={students:{year:refs.students.year,revision:refs.students.revision},locations:{year:refs.locations.year,revision:refs.locations.revision}};
-  const classes=new Set(b.rows.map((s:ExamSession)=>s.classroom));
-  let result;try{result=validateDataset({version:'1.0',event:b.rows[0].event,students:(refs.students.data as Student[]).filter(s=>classes.has(s.classroom)),locations:refs.locations.data,schedule:b.rows,arrangements:[]});}catch(e){throw new ApiError(400,(e as Error).message);}
+  const classes=new Set(rows.map((s:ExamSession)=>s.classroom));
+  let result;try{result=validateDataset({version:'1.0',event:rows[0].event,students:(refs.students.data as Student[]).filter(s=>classes.has(s.classroom)),locations:refs.locations.data,schedule:rows,arrangements:[]});}catch(e){throw new ApiError(400,(e as Error).message);}
   const d=result.data,existing=await db.prepare('SELECT id,draft,code_version FROM exams WHERE id=?').bind(d.event).first<{id:string;draft:number;code_version:number}>();
   if(b.createOnly&&existing)throw new ApiError(409,'此考試代碼已存在。新增考試請使用新的考試代碼；若要修改既有考試，請回到「目前管理考試」。');
   if(b.targetEvent!==undefined&&(b.targetEvent!==d.event||!existing))throw new ApiError(409,'檔案的考試代碼與目前管理考試不同。請選擇正確的考試；建立新考試請使用「新增考試」。');

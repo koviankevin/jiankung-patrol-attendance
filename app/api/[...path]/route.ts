@@ -10,12 +10,15 @@ async function body(req:Request){if(Number(req.headers.get('content-length')||0)
 async function handle(req:Request,parts:string[]){
  const db=database(),p=parts.join('/'),url=new URL(req.url);
  if(req.method==='POST')sameOrigin(req);
+ // Consume each submitted body before returning permission or state errors.
+ // This also keeps the preview transport usable after a rejected submission.
+ const submitted=req.method==='POST'?await body(req):null;
  if(p==='bootstrap'&&req.method==='GET'){
   const user=await authenticate(req,true);const events=await db.prepare(user?.role==='admin'?'SELECT id,title,closed FROM exams ORDER BY created_at DESC':'SELECT id,title,closed FROM exams WHERE closed=0 ORDER BY created_at DESC').all();
   return json({user:user?{role:user.role,name:user.name,event:user.exam_id}:null,events:events.results});
  }
  if(p==='login'&&req.method==='POST'){
-  const b=await body(req);await limited(req,b.role==='admin');if(typeof b.password!=='string'||b.password.length>200)throw new ApiError(400,'請輸入密碼或通行碼');
+  const b=submitted;await limited(req,b.role==='admin');if(typeof b.password!=='string'||b.password.length>200)throw new ApiError(400,'請輸入密碼或通行碼');
   let role='teacher',name='',eid:null|string=null,version=0,seconds=43200;
   if(b.role==='admin'){
    if(!env.ADMIN_PASSWORD_HASH)throw new ApiError(503,'管理密碼尚未設定');
@@ -36,7 +39,7 @@ async function handle(req:Request,parts:string[]){
  const user=(await authenticate(req)) as User;
  if(p==='logout'&&req.method==='POST'){await db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').bind(user.token_hash).run();return json({ok:true},200,{'Set-Cookie':cookie(req,'',0)});}
  if(p==='import'&&req.method==='POST'){
-  requireAdmin(user);const b=await body(req);let result;try{result=validateDataset(b.data);}catch(e){throw new ApiError(400,(e as Error).message);}
+  requireAdmin(user);const b=submitted;let result;try{result=validateDataset(b.data);}catch(e){throw new ApiError(400,(e as Error).message);}
   const existing=await db.prepare('SELECT id,closed FROM exams WHERE id=?').bind(result.data.event).first();
   const started=await db.prepare('SELECT COUNT(*) AS n FROM boards WHERE exam_id=?').bind(result.data.event).first<{n:number}>();
   if(existing&&(started?.n||existing.closed))throw new ApiError(409,'此考試已點名或結案，無法取代名冊與考程');
@@ -48,7 +51,7 @@ async function handle(req:Request,parts:string[]){
   if(!saved.meta.changes)throw new ApiError(409,'其他人已開始點名，匯入未套用');return json({...summary,ok:true});
  }
  if(p==='settings'&&req.method==='POST'){
-  requireAdmin(user);const b=await body(req);if(typeof b.event!=='string')throw new ApiError(400,'請選考試');await getExam(b.event);
+  requireAdmin(user);const b=submitted;if(typeof b.event!=='string')throw new ApiError(400,'請選考試');await getExam(b.event);
   if(b.action==='close'||b.action==='reopen')await db.prepare('UPDATE exams SET closed=?,code_version=code_version+1 WHERE id=?').bind(b.action==='close'?1:0,b.event).run();
   else if(b.action==='code'){
    if(typeof b.code!=='string'||b.code.length<6||b.code.length>64)throw new ApiError(400,'老師通行碼需6至64個字元');
@@ -70,7 +73,7 @@ async function handle(req:Request,parts:string[]){
  }
  if(p==='board'&&req.method==='POST'){
   if(!ses||ses.kind!=='考試')throw new ApiError(404,'此時段不需點名');if(e.closed)throw new ApiError(409,'考試已結案，請先重新開放');
-  const b=await body(req);if(!Number.isInteger(b.revision)||b.revision<0||typeof b.requestId!=='string'||!/^[a-f0-9-]{36}$/.test(b.requestId))throw new ApiError(400,'提交版本無效');
+  const b=submitted;if(!Number.isInteger(b.revision)||b.revision<0||typeof b.requestId!=='string'||!/^[a-f0-9-]{36}$/.test(b.requestId))throw new ApiError(400,'提交版本無效');
   let entries:Entries;try{entries=confirmEntries(data,ses,b.entries);}catch(err){throw new ApiError(400,(err as Error).message);}
   const payload=JSON.stringify(entries),hash=await digest(JSON.stringify([event,sid,b.revision,entries])),now=new Date().toISOString();
   const prior=await db.prepare('SELECT revision,body_hash,principal FROM audits WHERE request_id=?').bind(b.requestId).first<{revision:number;body_hash:string;principal:string}>();
@@ -102,5 +105,6 @@ async function handle(req:Request,parts:string[]){
 }
 async function route(req:Request,ctx:{params:Promise<{path:string[]}>}){try{return await handle(req,(await ctx.params).path);}catch(e){if(e instanceof ApiError)return json({error:e.message},e.status);console.error('patrol_request_failed',e instanceof Error?e.message:'unknown');return json({error:'操作未完成，請稍後重試；目前畫面的修改仍保留。'},500);}}
 export const GET=route;export const POST=route;
+
 
 

@@ -4,6 +4,18 @@ export type ReferenceKind='students'|'locations';
 export type ReferenceRow={kind:ReferenceKind;year:string;data:string;revision:number;updated_at:string};
 export async function references(){const r=await database().prepare('SELECT * FROM reference_data').all<ReferenceRow>();return Object.fromEntries(r.results.map(x=>[x.kind,{...x,data:JSON.parse(x.data)}])) as Partial<Record<ReferenceKind,Omit<ReferenceRow,'data'>&{data:Student[]|Location[]}>>;}
 export async function corrected(data:Dataset){const r=await references();return withReferenceCorrections(data,r.students?.data as Student[],r.locations?.data as Location[]);}
+export async function renameExam(b:any){
+ if(typeof b.event!=='string'||typeof b.title!=='string'||!b.title.trim()||b.title.trim().length>120||typeof b.previousTitle!=='string'||!Number.isInteger(b.version))throw new ApiError(400,'請填寫120字以內的考試名稱');
+ const db=database(),e=await db.prepare('SELECT title,data,code_version FROM exams WHERE id=?').bind(b.event).first<{title:string;data:string;code_version:number}>();
+ if(!e)throw new ApiError(404,'找不到考試');
+ if(e.title!==b.previousTitle||e.code_version!==b.version)throw new ApiError(409,'考試資料已更新，請重新載入後再修改名稱');
+ const title=b.title.trim();if(title===e.title)return {ok:true,title};
+ const data=JSON.parse(e.data) as Dataset;data.schedule=data.schedule.map(s=>({...s,title}));
+ // Keep active teacher sessions and attendance when correcting this descriptive field.
+ const result=await db.prepare('UPDATE exams SET title=?,data=? WHERE id=? AND title=? AND code_version=? AND data=?').bind(title,JSON.stringify(data),b.event,e.title,e.code_version,e.data).run();
+ if(!result.meta.changes)throw new ApiError(409,'考試資料已更新，請重新載入後再修改名稱');
+ return {ok:true,title};
+}
 export function validateReference(kind:ReferenceKind,rows:unknown){try{return kind==='students'?{data:validateStudents(rows),warnings:[]}:validateLocations(rows);}catch(e){throw new ApiError(400,(e as Error).message);}}
 export async function referenceRequest(method:string,b:any){
  const db=database();

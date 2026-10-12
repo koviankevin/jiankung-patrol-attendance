@@ -1,6 +1,6 @@
 import { ApiError,adminCredential,authenticate,cookie,database,digest,examAccess,limited,passwordHash,randomToken,requireAdmin,sameOrigin,verify,type User } from '@/lib/auth';
 import { confirmEntries,initialEntries,validateDataset,type Dataset,type Entries } from '@/lib/model';
-import {corrected,referenceRequest,examImport} from '@/lib/reference-store';
+import {corrected,referenceRequest,examImport,renameExam} from '@/lib/reference-store';
 import {resetAttendance} from '@/lib/reset-attendance';
 export const dynamic='force-dynamic';
 type Exam={id:string;title:string;data:string;closed:number;draft:number;reference_info:string;code_hash:string;code_version:number;created_at:string};
@@ -41,6 +41,7 @@ async function handle(req:Request,parts:string[]){
  const user=(await authenticate(req)) as User;
  if(p==='references'){requireAdmin(user);return json(await referenceRequest(req.method,submitted));}
  if(p==='exam/import'&&req.method==='POST'){requireAdmin(user);return json(await examImport(submitted));}
+ if(p==='exam/name'&&req.method==='POST'){requireAdmin(user);return json(await renameExam(submitted));}
  if(p==='reset'&&req.method==='POST'){requireAdmin(user);return json(await resetAttendance(submitted,user));}
  if(p==='exam/data'&&req.method==='GET'){requireAdmin(user);const e=await getExam(url.searchParams.get('event')||'');return json({data:await corrected(JSON.parse(e.data)),draft:!!e.draft,version:e.code_version,references:JSON.parse(e.reference_info)});}
  if(p==='logout'&&req.method==='POST'){await db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').bind(user.token_hash).run();return json({ok:true},200,{'Set-Cookie':cookie(req,'',0)});}

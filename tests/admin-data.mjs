@@ -68,6 +68,27 @@ await call(otherPath,{revision:0,entries:other.entries,requestId:crypto.randomUU
 dash=(await call('dashboard?event='+event,undefined,admin)).data;
 await call('reset',{event,scope:'exam',version:dash.version,versions:dash.versions,requestId:crypto.randomUUID()},admin);
 const exported=(await call('export?event='+event,undefined,admin)).data;
+// Renaming is administrative and preserves attendance, arrangements and active sessions.
+teacher=(await call('login',{event,name:'改名驗證老師'})).cookie;
+let renameDash=(await call('dashboard?event='+event,undefined,admin)).data;
+let renameBody={event,previousTitle:renameDash.title,version:renameDash.version,title:' 修正後考試名稱 '};
+await call('exam/name',renameBody,teacher,403);
+await call('exam/name',{...renameBody,title:' '},admin,400);
+await call('exam/name',{...renameBody,title:'名'.repeat(121)},admin,400);
+await call('exam/name',{...renameBody,version:-1},admin,409);
+await call('exam/name',renameBody,admin);
+await call('exam/name',renameBody,admin,409);
+const renamedExport=(await call('export?event='+event,undefined,admin)).data;
+assert.deepEqual(renamedExport.boards,exported.boards);
+assert.deepEqual(renamedExport.data,{...exported.data,schedule:exported.data.schedule.map(s=>({...s,title:'修正後考試名稱'}))});
+assert.equal((await call('dashboard?event='+event,undefined,teacher)).data.title,'修正後考試名稱');
+assert.equal((await call('bootstrap',undefined,admin)).data.events.find(e=>e.id===event).title,'修正後考試名稱');
+await call('settings',{event,action:'close'},admin);
+renameDash=(await call('dashboard?event='+event,undefined,admin)).data;
+await call('exam/name',{event,previousTitle:renameDash.title,version:renameDash.version,title:'已結案更正名稱'},admin);
+assert.equal((await call('dashboard?event='+event,undefined,admin)).data.closed,true);
+const draftDash=(await call('dashboard?event='+namedPreview.event,undefined,admin)).data;
+await call('exam/name',{event:namedPreview.event,previousTitle:draftDash.title,version:draftDash.version,title:'準備中更正名稱'},admin);
 assert.equal(exported.data.students[0].name,'更正姓名');assert.equal(exported.boards.length,2);assert.ok(exported.boards.every(b=>b.confirmed===0));
 assert.ok(exported.boards.every(b=>Object.values(b.entries).every(v=>['未點名','抽離','免到考'].includes(v.status))));
 await call('logout',{},admin);

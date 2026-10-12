@@ -42,12 +42,14 @@ export async function examImport(b:any){
   const classes=new Set(b.rows.map((s:ExamSession)=>s.classroom));
   let result;try{result=validateDataset({version:'1.0',event:b.rows[0].event,students:(refs.students.data as Student[]).filter(s=>classes.has(s.classroom)),locations:refs.locations.data,schedule:b.rows,arrangements:[]});}catch(e){throw new ApiError(400,(e as Error).message);}
   const d=result.data,existing=await db.prepare('SELECT id,draft,code_version FROM exams WHERE id=?').bind(d.event).first<{id:string;draft:number;code_version:number}>();
+  if(b.createOnly&&existing)throw new ApiError(409,'此考試代碼已存在。新增考試請使用新的考試代碼；若要修改既有考試，請回到「目前管理考試」。');
+  if(b.targetEvent!==undefined&&(b.targetEvent!==d.event||!existing))throw new ApiError(409,'檔案的考試代碼與目前管理考試不同。請選擇正確的考試；建立新考試請使用「新增考試」。');
   if(existing&&!existing.draft)throw new ApiError(409,'此考試已開放；新的考試請使用新代碼');
   const summary={event:d.event,title:d.schedule[0].title,count:d.schedule.length,students:d.students.length,classes:classes.size,warnings:[...(existing?['將取代準備中的考程並清空本次應試安排，請重新匯入安排後再開放。']:[]),...result.warnings],references:info,version:existing?.code_version||0};
   if(!b.commit)return summary;
   if(JSON.stringify(b.references)!==JSON.stringify(info))throw new ApiError(409,'年度資料已更新，請重新預覽考程');
   if((b.version||0)!==summary.version)throw new ApiError(409,'考程已更新，請重新預覽');
-  const saved=await db.prepare("INSERT INTO exams(id,title,data,code_hash,created_at,draft,reference_info) SELECT ?,?,?,'',?,1,? WHERE EXISTS(SELECT 1 FROM reference_data WHERE kind='students' AND revision=?) AND EXISTS(SELECT 1 FROM reference_data WHERE kind='locations' AND revision=?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,data=excluded.data,reference_info=excluded.reference_info,code_version=exams.code_version+1 WHERE exams.draft=1 AND exams.code_version=? AND NOT EXISTS(SELECT 1 FROM boards WHERE exam_id=exams.id)").bind(d.event,summary.title,JSON.stringify(d),new Date().toISOString(),JSON.stringify(info),refs.students.revision,refs.locations.revision,summary.version).run();
+  const saved=await db.prepare("INSERT INTO exams(id,title,data,code_hash,created_at,draft,reference_info) SELECT ?,?,?,'',?,1,? WHERE EXISTS(SELECT 1 FROM reference_data WHERE kind='students' AND revision=?) AND EXISTS(SELECT 1 FROM reference_data WHERE kind='locations' AND revision=?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,data=excluded.data,reference_info=excluded.reference_info,code_version=exams.code_version+1 WHERE ?=0 AND exams.draft=1 AND exams.code_version=? AND NOT EXISTS(SELECT 1 FROM boards WHERE exam_id=exams.id)").bind(d.event,summary.title,JSON.stringify(d),new Date().toISOString(),JSON.stringify(info),refs.students.revision,refs.locations.revision,b.createOnly?1:0,summary.version).run();
   if(!saved.meta.changes)throw new ApiError(409,'考試或年度資料已被更新，請重新預覽');return {...summary,ok:true};
  }
  if(b.kind==='arrangements'){

@@ -9,11 +9,16 @@ const locations=[{code:'101',name:'101',floor:1,description:'第一棟',status:'
 for(const [kind,rows] of [['students',students],['locations',locations]]){const body={kind,rows,year:'115',revision:refs[kind]?.revision||0};await call('references',body,admin);await call('references',{...body,commit:true},admin);await call('references',{...body,commit:true},admin,409);}
 refs=(await call('references',undefined,admin)).data;
 const event='REF-'+Date.now(),schedule=['101','401'].map((classroom,i)=>({event,title:'分開匯入測試',id:'SESSION-'+i,date:'2026-10-13',classroom,period:i?'第2–3節':'第2節',start:'09:00',end:i?'10:30':'10:00',kind:'考試',subject:'國文'}));
-const preview=(await call('exam/import',{kind:'schedule',rows:schedule},admin)).data;
+const preview=(await call('exam/import',{kind:'schedule',rows:schedule,createOnly:true},admin)).data;
 await call('exam/import',{kind:'schedule',rows:schedule,commit:true,references:{}},admin,409);
-await call('exam/import',{kind:'schedule',rows:schedule,commit:true,references:preview.references},admin);
+await call('exam/import',{kind:'schedule',rows:schedule,createOnly:true,commit:true,references:preview.references},admin);
+const created=(await call('exam/data?event='+event,undefined,admin)).data;
+await call('exam/import',{kind:'schedule',rows:schedule,createOnly:true},admin,409);
+await call('exam/import',{kind:'schedule',rows:schedule,createOnly:true,commit:true,references:preview.references},admin,409);
+await call('exam/import',{kind:'schedule',rows:schedule,targetEvent:'OTHER'},admin,409);
+assert.deepEqual((await call('exam/data?event='+event,undefined,admin)).data,created);
 const replacement=(await call('exam/import',{kind:'schedule',rows:schedule},admin)).data;assert.ok(replacement.warnings.some(w=>w.includes('清空')));
-await call('exam/import',{kind:'schedule',rows:schedule,commit:true,references:replacement.references,version:replacement.version},admin);
+await call('exam/import',{kind:'schedule',rows:schedule,targetEvent:event,commit:true,references:replacement.references,version:replacement.version},admin);
 assert.equal((await call('bootstrap')).data.events.some(e=>e.id===event),false);
 await call('login',{event,name:'老師'},'',403);
 const arrangements=[{id:'REF-2',session:'SESSION-0',arrangement:'抽離',location:'抽離教室'},{id:'REF-3',session:'SESSION-0',arrangement:'免到考',location:''}];

@@ -1,3 +1,4 @@
+import {maskStudentName} from '@/lib/student-name';
 import { ApiError,adminCredential,authenticate,cookie,database,digest,examAccess,limited,passwordHash,randomToken,requireAdmin,sameOrigin,verify,type User } from '@/lib/auth';
 import { confirmEntries,initialEntries,validateDataset,type Dataset,type Entries } from '@/lib/model';
 import {corrected,referenceRequest,examImport,renameExam} from '@/lib/reference-store';
@@ -96,7 +97,7 @@ async function handle(req:Request,parts:string[]){
  if(p==='board'&&req.method==='GET'){
   if(!ses||ses.kind!=='考試')throw new ApiError(404,'此時段不需點名');
   const b=await db.prepare('SELECT * FROM boards WHERE exam_id=? AND session_id=?').bind(event,sid).first<Board>();
-  return json({session:ses,closed:!!e.closed||!!e.draft,confirmed:!!b?.confirmed,students:data.students.filter(s=>s.classroom===ses.classroom).sort((a,b)=>a.seat-b.seat),arrangements:data.arrangements.filter(a=>a.session===sid),entries:b?JSON.parse(b.entries):initialEntries(data,ses),revision:b?.revision||0,actor:b?.actor||'',updatedAt:b?.updated_at||''});
+  return json({session:ses,closed:!!e.closed||!!e.draft,confirmed:!!b?.confirmed,students:data.students.filter(s=>s.classroom===ses.classroom).sort((a,b)=>a.seat-b.seat).map(s=>user.role==='teacher'?{...s,name:maskStudentName(s.name)}:s),arrangements:data.arrangements.filter(a=>a.session===sid),entries:b?JSON.parse(b.entries):initialEntries(data,ses),revision:b?.revision||0,actor:b?.actor||'',updatedAt:b?.updated_at||''});
  }
  if(p==='board'&&req.method==='POST'){
   if(!ses||ses.kind!=='考試')throw new ApiError(404,'此時段不需點名');if(e.closed||e.draft)throw new ApiError(409,'考試尚未開放或已結案');

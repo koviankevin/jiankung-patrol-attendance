@@ -53,7 +53,7 @@ board.entries['REF-1']={status:'缺席',note:'測試備註'};
 await call(path,{revision:0,entries:board.entries,requestId:crypto.randomUUID()},teacher);
 await call('references',{kind:'students',year:'115',revision:refs.students.revision,action:'edit',id:'REF-1',patch:{name:'更正姓名'},commit:true},admin);
 await call('references',{kind:'locations',year:'115',revision:refs.locations.revision,action:'edit',id:'101',patch:{floor:3,description:'更正樓層',status:'已對照'},commit:true},admin);
-board=(await call(path,undefined,teacher)).data;assert.equal(board.students[0].name,'更正姓名');assert.equal(board.entries['REF-1'].status,'缺席');assert.equal(board.students[0].classroom,'101');
+board=(await call(path,undefined,teacher)).data;assert.equal(board.students[0].name,'更○○名');assert.equal(JSON.stringify(board.students).includes('更正姓名'),false);assert.equal((await call(path,undefined,admin)).data.students[0].name,'更正姓名');assert.equal(board.entries['REF-1'].status,'缺席');assert.equal(board.students[0].classroom,'101');
 dash=(await call('dashboard?event='+event,undefined,admin)).data;assert.equal(dash.locations.find(l=>l.code==='101').floor,3);
 const reset={event,scope:'session',session:'SESSION-0',version:dash.version,versions:{'SESSION-0':1},requestId:crypto.randomUUID()};
 await call('reset',{...reset,versions:{'SESSION-0':0}},admin,409);

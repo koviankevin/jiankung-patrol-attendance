@@ -9,6 +9,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {pbkdf2Sync, randomBytes} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
+import {finished} from 'node:stream/promises';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const suites = ['api', 'carry-forward', 'admin-data', 'lifecycle'];
@@ -21,30 +22,60 @@ assert.deepEqual([...migrations].sort(), (await readdir(path.join(root, 'drizzle
 const logs = path.join(root, 'test-results/api');
 await mkdir(logs, {recursive: true});
 const scratch = await mkdtemp(path.join(tmpdir(), 'patrol-ci-'));
-let active;
+const children = new Set();
+const logWrites = [];
+const stopping = new WeakMap();
+let interrupted;
 
-async function stop(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = once(child, 'exit');
-  child.kill('SIGTERM');
-  const deadline = setTimeout(() => child.kill('SIGKILL'), 5000);
-  try { await exited; } finally { clearTimeout(deadline); }
+function signalTree(child, signal) {
+  if (!child.pid) return;
+  try {
+    if (process.platform === 'win32') child.kill(signal);
+    else process.kill(-child.pid, signal);
+  } catch (error) { if (error.code !== 'ESRCH') throw error; }
 }
-for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => {
-  await stop(active);
-  await rm(scratch, {recursive: true, force: true});
-  process.exit(signal === 'SIGINT' ? 130 : 143);
+
+function stop(child) {
+  if (stopping.has(child)) return stopping.get(child);
+  if (!children.has(child)) return Promise.resolve();
+  const task = (async () => {
+    signalTree(child, 'SIGTERM');
+    const deadline = setTimeout(() => signalTree(child, 'SIGKILL'), 5000);
+    try { await child.closed; } finally {
+      clearTimeout(deadline);
+      // A wrapper can exit before its descendants; terminate the remaining group.
+      signalTree(child, 'SIGKILL');
+    }
+  })();
+  stopping.set(child, task);
+  return task;
+}
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
+  interrupted ||= signal;
+  process.exitCode = interrupted === 'SIGINT' ? 130 : 143;
+  // Keep the main try/finally alive until *all* children and logs are drained.
+  for (const child of children) void stop(child);
 });
 
 function launch(args, cwd, env, logName) {
+  if (interrupted) throw new Error(`API runner interrupted by ${interrupted}`);
   const log = createWriteStream(path.join(logs, logName));
-  const child = spawn(process.execPath, args, {cwd, env, stdio: ['ignore', 'pipe', 'pipe']});
+  const written = finished(log);
+  written.catch(() => {}); // Report write failures from the final awaited cleanup.
+  logWrites.push(written);
+  const child = spawn(process.execPath, args, {
+    cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  children.add(child);
   // Retain actionable server/migration/test output, never configs or the database.
   child.stdout.on('data', chunk => {log.write(chunk); process.stdout.write(chunk);});
   child.stderr.on('data', chunk => {log.write(chunk); process.stderr.write(chunk);});
-  child.on('close', () => log.end());
-  child.on('error', error => log.end(String(error)));
-  active = child;
+  child.closed = new Promise(resolve => child.once('close', (code, signal) => {
+    children.delete(child);
+    log.end();
+    resolve([code, signal]);
+  }));
+  child.on('error', error => {log.write(String(error)); process.stderr.write(`${error}\n`);});
   return child;
 }
 
@@ -53,7 +84,8 @@ async function run(args, cwd, env, logName, timeout = 60_000) {
   let timedOut = false;
   const timer = setTimeout(() => {timedOut = true; void stop(child);}, timeout);
   try {
-    const [code, signal] = await once(child, 'close');
+    const [code, signal] = await child.closed;
+    assert.equal(timedOut, false, `${logName} timed out; see test-results/api/${logName}`);
     assert.equal(code, 0, `${logName} failed (signal=${signal}, timeout=${timedOut}); see test-results/api/${logName}`);
   } finally { clearTimeout(timer); }
 }
@@ -135,8 +167,13 @@ try {
         {...env, TEST_URL: base, TEST_ADMIN_PASSWORD: password}, `${suite}-tests.log`, 120_000);
     } finally { await stop(server); }
   }
-  console.log('\nAll four API suites passed against independent disposable local databases.');
+  if (!interrupted) console.log('\nAll four API suites passed against independent disposable local databases.');
+} catch (error) {
+  if (!interrupted) throw error;
+  console.error(`API runner interrupted by ${interrupted}; cleaning up all child processes.`);
 } finally {
-  await stop(active);
-  await rm(scratch, {recursive: true, force: true});
+  try {
+    await Promise.all([...children].map(stop));
+    await Promise.all(logWrites);
+  } finally { await rm(scratch, {recursive: true, force: true}); }
 }

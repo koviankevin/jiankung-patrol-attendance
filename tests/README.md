@@ -17,6 +17,8 @@ pnpm test:api
 - `typecheck`：全專案 TypeScript，不以建置成功代替型別檢查。
 - `test:unit`：所有 `tests/*.test.ts`，包含出席／匯入／同日帶入、考試檢查／歷史判定、
   跨節／同步、姓名遮罩，以及測試 HTTP 的本機限制和禁止重新導向。
+  Linux 另以替身程序驗證執行器成功、失敗與 SIGTERM 中斷三條路徑，包括環境／設定
+  白名單、獨立 state、非零結束碼、日誌完整寫入，以及不回應 SIGTERM 的子孫程序清理。
   共用 fixture 獨立存放，避免匯入另一個測試檔而重複計數。
 - `build`：沿用既有 `pnpm build` 的正式 Worker 建置，不發布。
 - `test:api`：執行 `api.mjs`、`carry-forward.mjs`、`admin-data.mjs`、`lifecycle.mjs`。
@@ -36,7 +38,9 @@ checkout 的 `.env` / `.dev.vars`。不需要 GitHub secrets 或 Cloudflare 帳�
 
 Worker 只綁定 `127.0.0.1` 的臨時 port。等待 `/api/bootstrap` 成功且確認考試清單
 為空後才執行測試；HTTP 請求只允許同一個本機 origin，禁止 redirect，並設有逾時。
-最後停止 Worker 並移除臨時資料，即使失敗也清理；Runner 遭強制終止時，由 GitHub
+最後停止 Worker 並移除臨時資料，即使失敗也清理；Linux 收到 SIGINT／SIGTERM 時，
+會等待所有測試／Worker 程序群組與日誌完成，五秒後強制停止未退出的程序，
+再移除臨時資料並以 130／143 結束。Runner 遭 SIGKILL 強制終止時，由 GitHub
 丟棄該虛擬機。所有學生、老師、年度資料和點名皆為合成資料。
 
 既有 `node tests/api.mjs` 等單檔指令仍支援本機測試網站，**不負責隔離其資料庫**；

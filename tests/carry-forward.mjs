@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-const base=process.env.TEST_URL||'http://127.0.0.1:5173';if(!['localhost','127.0.0.1'].includes(new URL(base).hostname))throw Error('Local tests only');
+import {base, localFetch as fetch} from './helpers/local-api.mjs';
 let checks=0;
-async function call(path,body,cookie='',status=200){const r=await fetch(base+'/api/'+path,{method:body===undefined?'GET':'POST',headers:{Origin:base,'Content-Type':'application/json',Cookie:cookie,'CF-Connecting-IP':'203.0.113.'+(checks+1)},body:body===undefined?undefined:JSON.stringify(body)});const data=await r.json();assert.equal(r.status,status,JSON.stringify(data));checks++;return {data,cookie:r.headers.get('set-cookie')?.split(';')[0]};}
+async function call(path,body,cookie='',status=200){const r=await fetch(base+'/api/'+path,{method:body===undefined?'GET':'POST',headers:{Origin:base,'Content-Type':'application/json',Cookie:cookie,'CF-Connecting-IP':'203.0.113.'+(checks+1)},body:body===undefined?undefined:JSON.stringify(body)});const data=await r.json();assert.equal(r.status,status,`${body===undefined?'GET':'POST'} /api/${path}: ${JSON.stringify(data)}`);checks++;return {data,cookie:r.headers.get('set-cookie')?.split(';')[0]};}
 const admin=(await call('login',{role:'admin',password:process.env.TEST_ADMIN_PASSWORD||'Local-test-admin-2026'})).cookie;
 const event='CARRY-'+Date.now(),data={version:'1.0',event,students:[1,2,3,4,5,6].map(n=>({id:'CARRY-'+n,name:'測試學生'+n,grade:1,classroom:'101',seat:n})),schedule:[],arrangements:[],locations:[{code:'101',name:'101',floor:1,description:'',status:'已對照'},{code:'102',name:'102',floor:1,description:'',status:'已對照'},{code:'ROOM',name:'抽離教室',floor:1,description:'',status:'已對照'}]};
 data.students.push({id:'OTHER',name:'他班學生',grade:1,classroom:'102',seat:1});

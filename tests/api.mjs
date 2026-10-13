@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-const base=process.env.TEST_URL||'http://127.0.0.1:5173';
-if(!['localhost','127.0.0.1'].includes(new URL(base).hostname))throw Error('Tests may run only on a local database');
+import {base, localFetch as fetch} from './helpers/local-api.mjs';
 const creds={admin:process.env.TEST_ADMIN_PASSWORD||'Local-test-admin-2026'};
 const data={version:'1.0',event:'TEST-'+Date.now(),students:[1,2,3].map(n=>({id:String(n),name:`測試学生${n}`,grade:1,classroom:'101',seat:n})),schedule:[],arrangements:[],locations:[{code:'101',name:'101',floor:1,description:'',status:'已對照'},{code:'ROOM',name:'測試教室',floor:1,description:'',status:'已對照'}]};
 data.schedule=[{id:'SESSION',event:data.event,title:'自動測試考試',date:'2026-10-13',classroom:'101',period:'第2–3節',start:'09:00',end:'10:30',kind:'考試',subject:'國文'},{id:'STUDY',event:data.event,title:'自動測試考試',date:'2026-10-13',classroom:'101',period:'第4節',start:'11:00',end:'12:00',kind:'自習',subject:'自習'}];
 data.arrangements=[{id:'2',session:'SESSION',arrangement:'抽離',location:'測試教室'},{id:'3',session:'SESSION',arrangement:'免到考',location:''}];
 let checks=0;
-async function request(path,body,cookie='',expected=200){const r=await fetch(base+'/api/'+path,{method:body===undefined?'GET':'POST',headers:{Origin:base,'Content-Type':'application/json',Cookie:cookie,'CF-Connecting-IP':'192.0.2.'+(checks+1)},body:body===undefined?undefined:JSON.stringify(body)});const json=await r.json();assert.equal(r.status,expected,JSON.stringify(json));checks++;return {data:json,cookie:r.headers.get('set-cookie')?.split(';')[0]};}
+async function request(path,body,cookie='',expected=200){const r=await fetch(base+'/api/'+path,{method:body===undefined?'GET':'POST',headers:{Origin:base,'Content-Type':'application/json',Cookie:cookie,'CF-Connecting-IP':'192.0.2.'+(checks+1)},body:body===undefined?undefined:JSON.stringify(body)});const json=await r.json();assert.equal(r.status,expected,`${body===undefined?'GET':'POST'} /api/${path}: ${JSON.stringify(json)}`);checks++;return {data:json,cookie:r.headers.get('set-cookie')?.split(';')[0]};}
 await request('dashboard?event=X',undefined,'',401);
 const admin=(await request('login',{role:'admin',password:creds.admin})).cookie;
 const preview=await request('import',{data},admin);assert.equal(preview.data.sessions,1);

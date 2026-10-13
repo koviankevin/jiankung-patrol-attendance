@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-const base=process.env.TEST_URL||'http://127.0.0.1:5173';if(!['localhost','127.0.0.1'].includes(new URL(base).hostname))throw Error('Local tests only');
+import {base, localFetch as fetch} from './helpers/local-api.mjs';
 let checks=0;
-async function call(path,body,cookie='',status=200){const r=await fetch(base+'/api/'+path,{method:body===undefined?'GET':'POST',headers:{Origin:base,'Content-Type':'application/json',Cookie:cookie,'CF-Connecting-IP':'198.51.100.'+(checks+1)},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();assert.equal(r.status,status,JSON.stringify(d));checks++;return {data:d,cookie:r.headers.get('set-cookie')?.split(';')[0]};}
+async function call(path,body,cookie='',status=200){const r=await fetch(base+'/api/'+path,{method:body===undefined?'GET':'POST',headers:{Origin:base,'Content-Type':'application/json',Cookie:cookie,'CF-Connecting-IP':'198.51.100.'+(checks+1)},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();assert.equal(r.status,status,`${body===undefined?'GET':'POST'} /api/${path}: ${JSON.stringify(d)}`);checks++;return {data:d,cookie:r.headers.get('set-cookie')?.split(';')[0]};}
 const admin=(await call('login',{role:'admin',password:process.env.TEST_ADMIN_PASSWORD||'Local-test-admin-2026'})).cookie;
 let refs=(await call('references',undefined,admin)).data;
 const students=[1,2,3].map(n=>({id:'REF-'+n,name:'測試'+n,grade:1,classroom:'101',seat:n}));students.push({id:'REF-4',name:'高中測試',grade:4,classroom:'401',seat:1});

@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
-const base='http://127.0.0.1:5173';let checks=0;
-async function call(path,body,cookie='',status=200){const r=await fetch(base+'/api/'+path,{method:body===undefined?'GET':'POST',headers:{Origin:base,'Content-Type':'application/json',Cookie:cookie},body:body===undefined?undefined:JSON.stringify(body)}),data=await r.json();assert.equal(r.status,status,JSON.stringify(data));checks++;return {data,cookie:r.headers.get('set-cookie')?.split(';')[0]};}
-const admin=(await call('login',{role:'admin',password:'Local-test-admin-2026'})).cookie;
+import {base, localFetch as fetch} from './helpers/local-api.mjs';
+let checks=0;
+async function call(path,body,cookie='',status=200){const r=await fetch(base+'/api/'+path,{method:body===undefined?'GET':'POST',headers:{Origin:base,'Content-Type':'application/json',Cookie:cookie},body:body===undefined?undefined:JSON.stringify(body)}),data=await r.json();assert.equal(r.status,status,`${body===undefined?'GET':'POST'} /api/${path}: ${JSON.stringify(data)}`);checks++;return {data,cookie:r.headers.get('set-cookie')?.split(';')[0]};}
+const admin=(await call('login',{role:'admin',password:process.env.TEST_ADMIN_PASSWORD||'Local-test-admin-2026'})).cookie;
 let refs=(await call('references',undefined,admin)).data;
+// Own synthetic references: this suite must also pass on an empty D1 database.
+for (const [kind, rows] of [
+ ['students', [{id:'LIFE-1',name:'生命週期測試',grade:1,classroom:'101',seat:1}]],
+ ['locations', [{code:'101',name:'101',floor:1,description:'',status:'已對照'}, {code:'ROOM',name:'抽離教室',floor:1,description:'',status:'已對照'}]],
+]) await call('references',{kind,rows,year:'115',revision:refs[kind]?.revision||0,commit:true},admin);
+refs=(await call('references',undefined,admin)).data;
 const extra={...refs.students.data[0],id:'CHECK-102',classroom:'102',name:'漏排檢查'};
 await call('references',{kind:'students',year:'115',revision:refs.students.revision,rows:[...refs.students.data,extra],commit:true},admin);
 const rows=[{id:'A',date:'2026-10-13',classroom:'101',period:'第1節',start:'08:00',end:'09:00',kind:'考試',subject:'國文'},{id:'B',date:'2026-10-14',classroom:'101',period:'第1節',start:'08:00',end:'09:00',kind:'考試',subject:'數學'}];

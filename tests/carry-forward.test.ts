@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {initialEntries,prefillEntries,normalizeEntries,confirmEntries,validateDataset,STATUSES} from '../lib/model.ts';
-import {fixture} from './model.test.ts';
+import {fixture} from './fixtures/model.ts';
 test('帶入僅沿用一般學生出席缺席，當場抽離免到考優先且不沿用備註',()=>{
  const d=validateDataset(fixture).data,s=d.schedule[0];
  const previous={1:{status:'請假' as const,note:'前一場備註'},2:{status:'缺席' as const,note:''},3:{status:'出席' as const,note:''}};

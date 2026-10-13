@@ -44,10 +44,15 @@
 
 ## 開發與驗證
 
+GitHub Actions 自動回歸測試會在 PR 與 main 更新時執行型別檢查、規則／姓名遮罩測試、
+正式建置及隔離本機 D1 API 測試。執行方式、日誌與驗證邊界見 [tests/README.md](tests/README.md)。
+CI 不部署網站，也不取代正式環境驗收。
+
 Node.js >= 22.13，pnpm 11。執行 pnpm install、pnpm build。開發預覽為 pnpm dev。透過 Sites 外掛的標準流程打包及發布，不使用 GitHub Pages。
 
-- 型別檢查：node node_modules/typescript/bin/tsc --noEmit
-- 規則測試：node --experimental-strip-types --test tests/model.test.ts tests/carry-forward.test.ts
+- 型別檢查：pnpm typecheck
+- 規則與姓名遮罩測試：pnpm test:unit
+- 隔離 API 回歸：pnpm build && pnpm test:api（每組使用全新本機 D1 與合成資料）
 - API 測試：node tests/api.mjs（僅允許 localhost，使用 TEST_ADMIN_PASSWORD 環境變數或測試專用預設密碼；會建立合成測試考試）
 - 同日帶入與確認邊界測試：node tests/carry-forward.mjs（僅限本機）。
 - 資料與重設測試：node tests/admin-data.mjs（僅限本機，更新合成年度資料並建立測試考試）。時段與同步規則：node --experimental-strip-types --test tests/patrol-view.test.ts。

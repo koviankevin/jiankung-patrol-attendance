@@ -1,5 +1,5 @@
 import type {Dataset,Entries,ExamSession} from './model';
-import {initialEntries,validateDataset} from './model';
+import {initialEntries,normalizeEntries,validateDataset} from './model';
 async function excel(){return (await import('exceljs')).default;}
 export type ImportKind='students'|'locations'|'schedule'|'arrangements';
 export const SHEETS={students:'學生名冊',locations:'教室位置',schedule:'考程',arrangements:'應試安排'} as const;
@@ -73,7 +73,7 @@ export async function downloadReport(snapshot:{data:Dataset;boards:ExportBoard[]
  const overview=wb.addWorksheet('學生總表'),detail=wb.addWorksheet('逐筆明細'),info=wb.addWorksheet('報表說明');
  overview.addRow(['班級','座號','學號','姓名',...slots]);
  detail.addRow(['班級','座號','學號','姓名','日期','節次','開始時間','結束時間','科目','狀態','確認狀態','備註','填寫者','更新時間']);
- const resolved=new Map(sessions.map(s=>[s.id,boardMap.get(s.id)?.entries||initialEntries(d,s)]));
+ const resolved=new Map(sessions.map(s=>[s.id,normalizeEntries(boardMap.get(s.id)?.entries||initialEntries(d,s))]));
  for(const student of students){
   const current=sessions.filter(s=>s.classroom===student.classroom),bySlot=new Map(current.map(s=>[slot(s),s]));
   overview.addRow([student.classroom,student.seat,student.id,student.name,...slots.map(k=>{const s=bySlot.get(k);return s?resolved.get(s.id)?.[student.id]?.status||'未點名':'無考程';})]);

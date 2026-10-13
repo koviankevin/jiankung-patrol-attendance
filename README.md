@@ -14,6 +14,11 @@
 
 ## 使用規則
 
+- 新場次帶入同一天、同班最近一場已確認考試的出席／缺席，僅在該場尚無紀錄時套用。當場抽離及免到考優先，不帶入前場備註、抽離、免到考或舊遲到；仍須老師確認才儲存。已儲存或管理者重設的場次不自動覆蓋，查看或匯出也不會替未確認場次建立紀錄。
+- 請假統一視為缺席；既有請假在點名、總覽、修改紀錄與報表統一顯示缺席，底層原始稽核資料保留。
+- 老師首頁以找班與點名為主，不顯示整體完成量。管理後台提供日期、年級、班級篩選總覽，可查看未確認、有缺席場次與填寫者，每 20 秒更新。
+- 學生姓名顯示中間遮蔽，管理者更正姓名及匯出保留原名。
+
 - 開放前檢查總覽：選擇應考年級，依年度及考試名單核對缺班與各日考程，集中列出格式、時間重疊、學號／場次／抽離地點問題。資料錯誤禁止開放；缺班或位置提醒需人工確認。檢查綁定考程與年度資料版本，資料改動後需重新檢查。此檢查不代替核定考程的科目核對。
 - 考試選單預設收合已結案、或考程結束超過30天的歷史考試（準備中考試保留）。展開歷史清單可搜尋、選取後匯出或複製，僅影響清單呈現，不刪除或鎖定資料。
 - 「複製考程建立新考試」指定新名稱與每個原考試日的新日期，預覽確認後以新代碼建立準備中考試。使用當前年度學生及教室資料；不複製應試安排、點名、備註或稽核紀錄。來源考程或年度資料在預覽後變動會拒絕建立，需重新預覽。
@@ -42,8 +47,9 @@
 Node.js >= 22.13，pnpm 11。執行 pnpm install、pnpm build。開發預覽為 pnpm dev。透過 Sites 外掛的標準流程打包及發布，不使用 GitHub Pages。
 
 - 型別檢查：node node_modules/typescript/bin/tsc --noEmit
-- 規則測試：node --experimental-strip-types --test tests/model.test.ts
+- 規則測試：node --experimental-strip-types --test tests/model.test.ts tests/carry-forward.test.ts
 - API 測試：node tests/api.mjs（僅允許 localhost，使用 TEST_ADMIN_PASSWORD 環境變數或測試專用預設密碼；會建立合成測試考試）
+- 同日帶入與確認邊界測試：node tests/carry-forward.mjs（僅限本機）。
 - 資料與重設測試：node tests/admin-data.mjs（僅限本機，更新合成年度資料並建立測試考試）。時段與同步規則：node --experimental-strip-types --test tests/patrol-view.test.ts。
 - 本機資料表：先 build 產出 dist/server/wrangler.json，再執行 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_outgoing_lizard.sql。只對未套用的 migration 執行一次。
 - 正式 schema 由 Sites 部署流程套用。程式發布不搬移本機測試資料。

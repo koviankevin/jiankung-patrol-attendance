@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+const base=process.env.TEST_URL||'http://127.0.0.1:5173';if(!['localhost','127.0.0.1'].includes(new URL(base).hostname))throw Error('Local tests only');
+let checks=0;
+async function call(path,body,cookie='',status=200){const r=await fetch(base+'/api/'+path,{method:body===undefined?'GET':'POST',headers:{Origin:base,'Content-Type':'application/json',Cookie:cookie,'CF-Connecting-IP':'203.0.113.'+(checks+1)},body:body===undefined?undefined:JSON.stringify(body)});const data=await r.json();assert.equal(r.status,status,JSON.stringify(data));checks++;return {data,cookie:r.headers.get('set-cookie')?.split(';')[0]};}
+const admin=(await call('login',{role:'admin',password:process.env.TEST_ADMIN_PASSWORD||'Local-test-admin-2026'})).cookie;
+const event='CARRY-'+Date.now(),data={version:'1.0',event,students:[1,2,3,4,5,6].map(n=>({id:'CARRY-'+n,name:'測試學生'+n,grade:1,classroom:'101',seat:n})),schedule:[],arrangements:[],locations:[{code:'101',name:'101',floor:1,description:'',status:'已對照'},{code:'102',name:'102',floor:1,description:'',status:'已對照'},{code:'ROOM',name:'抽離教室',floor:1,description:'',status:'已對照'}]};
+data.students.push({id:'OTHER',name:'他班學生',grade:1,classroom:'102',seat:1});
+const session=(id,date,start,end,classroom='101',kind='考試')=>({id,event,title:'同日帶入與管理總覽測試',date,classroom,period:id,start,end,kind,subject:kind==='自習'?'自習':'國文'});
+data.schedule=[session('PREV-DAY','2026-10-12','08:00','09:00'),session('FIRST','2026-10-13','08:00','09:00'),session('STUDY','2026-10-13','09:00','09:30','101','自習'),session('GAP','2026-10-13','09:30','10:00'),session('SECOND','2026-10-13','10:00','11:00'),session('THIRD','2026-10-13','11:00','12:00'),session('NEXT-DAY','2026-10-14','08:00','09:00'),session('OTHER-CLASS','2026-10-13','10:00','11:00','102')];
+data.arrangements=[{id:'CARRY-2',session:'FIRST',arrangement:'抽離',location:'抽離教室'},{id:'CARRY-3',session:'FIRST',arrangement:'免到考',location:''},{id:'CARRY-4',session:'SECOND',arrangement:'抽離',location:'抽離教室'},{id:'CARRY-5',session:'SECOND',arrangement:'免到考',location:''}];
+await call('import',{data,commit:true},admin);
+let teacher=(await call('login',{event,name:'測試老師'})).cookie;
+const path=id=>`board?event=${event}&session=${id}`;
+const read=async id=>(await call(path(id),undefined,teacher)).data;
+const save=async(id,b)=>call(path(id),{entries:b.entries,revision:b.revision,requestId:crypto.randomUUID()},teacher);
+let b=await read('PREV-DAY');b.entries['CARRY-1'].status='缺席';await save('PREV-DAY',b);
+b=await read('FIRST');assert.equal(b.carriedFrom,null);assert.equal(b.entries['CARRY-1'].status,'未點名');b.entries['CARRY-1']={status:'缺席',note:'不帶到下一場'};await save('FIRST',b);
+b=await read('SECOND');assert.equal(b.confirmed,false);assert.equal(b.revision,0);assert.equal(b.carriedFrom.session,'FIRST');assert.equal(b.carriedFrom.count,2);assert.deepEqual(b.entries['CARRY-1'],{status:'缺席',note:''});assert.equal(b.entries['CARRY-2'].status,'未點名');assert.equal(b.entries['CARRY-3'].status,'未點名');assert.equal(b.entries['CARRY-4'].status,'抽離');assert.equal(b.entries['CARRY-5'].status,'免到考');assert.equal(b.entries['CARRY-6'].status,'出席');
+let snap=(await call('export?event='+event,undefined,admin)).data;assert.equal(snap.boards.some(b=>b.session_id==='SECOND'),false);
+let dash=(await call('dashboard?event='+event,undefined,admin)).data;assert.equal(dash.progress.SECOND,undefined);assert.equal(dash.progress.FIRST.counts['缺席'],1);
+b.entries['CARRY-1'].status='出席';await save('SECOND',b);
+const saved=await read('SECOND');assert.equal(saved.carriedFrom,null);assert.equal(saved.entries['CARRY-1'].status,'出席');
+b=await read('FIRST');b.entries['CARRY-6'].status='缺席';await save('FIRST',b);assert.equal((await read('SECOND')).entries['CARRY-6'].status,'出席');
+b=await read('THIRD');assert.equal(b.carriedFrom.session,'SECOND');assert.equal(b.entries['CARRY-1'].status,'出席');assert.equal(b.entries['CARRY-6'].status,'出席');
+for(const id of ['NEXT-DAY','OTHER-CLASS']){b=await read(id);assert.equal(b.carriedFrom,null);assert.ok(Object.values(b.entries).every(x=>x.status==='未點名'));}
+dash=(await call('dashboard?event='+event,undefined,admin)).data;await call('reset',{event,scope:'session',session:'SECOND',version:dash.version,versions:{SECOND:saved.revision},requestId:crypto.randomUUID()},admin);
+teacher=(await call('login',{event,name:'測試老師'})).cookie;b=await read('SECOND');assert.equal(b.carriedFrom,null);assert.equal(b.confirmed,false);assert.equal(b.entries['CARRY-1'].status,'未點名');assert.equal(b.entries['CARRY-4'].status,'抽離');assert.equal(b.entries['CARRY-5'].status,'免到考');
+b.entries['CARRY-1'].status='請假';await call(path('SECOND'),{entries:b.entries,revision:b.revision,requestId:crypto.randomUUID()},teacher,400);
+await call('logout',{},teacher);await call('logout',{},admin);
+console.log(`${checks} checks passed: same-day carry, nearest confirmed source, class/date boundaries, current arrangements, explicit confirmation, saved/reset protection and no leave option.`);

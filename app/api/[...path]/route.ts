@@ -1,6 +1,6 @@
 import {maskStudentName} from '@/lib/student-name';
 import { ApiError,adminCredential,authenticate,cookie,database,digest,examAccess,limited,passwordHash,randomToken,requireAdmin,sameOrigin,verify,type User } from '@/lib/auth';
-import { confirmEntries,initialEntries,validateDataset,type Dataset,type Entries } from '@/lib/model';
+import { confirmEntries,initialEntries,normalizeEntries,prefillEntries,validateDataset,type Dataset,type Entries } from '@/lib/model';
 import {corrected,referenceRequest,examImport,renameExam} from '@/lib/reference-store';
 import {preflight,openCheckedExam,duplicateExam} from '@/lib/exam-lifecycle';
 import {resetAttendance} from '@/lib/reset-attendance';
@@ -89,7 +89,7 @@ async function handle(req:Request,parts:string[]){
  const event=url.searchParams.get('event')||'';examAccess(user,event);const e=await getExam(event),data=await corrected(JSON.parse(e.data) as Dataset);
  if(p==='dashboard'&&req.method==='GET'){
   const rows=await db.prepare('SELECT session_id,revision,confirmed,entries,actor,updated_at FROM boards WHERE exam_id=?').bind(event).all<Board>();
-  const progress=Object.fromEntries(rows.results.filter(b=>b.confirmed).map(b=>[b.session_id,{revision:b.revision,actor:b.actor,updatedAt:b.updated_at,counts:Object.values(JSON.parse(b.entries) as Entries).reduce((a,x)=>({...a,[x.status]:(a[x.status]||0)+1}),{} as Record<string,number>)}]));
+  const progress=Object.fromEntries(rows.results.filter(b=>b.confirmed).map(b=>[b.session_id,{revision:b.revision,actor:b.actor,updatedAt:b.updated_at,counts:Object.values(normalizeEntries(JSON.parse(b.entries))).reduce((a,x)=>({...a,[x.status]:(a[x.status]||0)+1}),{} as Record<string,number>)}]));
   const counts=Object.fromEntries([...new Set(data.students.map(s=>s.classroom))].map(c=>[c,data.students.filter(s=>s.classroom===c).length]));
   return json({event:e.id,title:e.title,closed:!!e.closed,draft:!!e.draft,version:e.code_version,versions:Object.fromEntries(rows.results.map(b=>[b.session_id,b.revision])),grades:Object.fromEntries(data.students.map(s=>[s.classroom,s.grade])),schedule:data.schedule,locations:data.locations,counts,progress});
  }
@@ -97,7 +97,16 @@ async function handle(req:Request,parts:string[]){
  if(p==='board'&&req.method==='GET'){
   if(!ses||ses.kind!=='考試')throw new ApiError(404,'此時段不需點名');
   const b=await db.prepare('SELECT * FROM boards WHERE exam_id=? AND session_id=?').bind(event,sid).first<Board>();
-  return json({session:ses,closed:!!e.closed||!!e.draft,confirmed:!!b?.confirmed,students:data.students.filter(s=>s.classroom===ses.classroom).sort((a,b)=>a.seat-b.seat).map(s=>user.role==='teacher'?{...s,name:maskStudentName(s.name)}:s),arrangements:data.arrangements.filter(a=>a.session===sid),entries:b?JSON.parse(b.entries):initialEntries(data,ses),revision:b?.revision||0,actor:b?.actor||'',updatedAt:b?.updated_at||''});
+  let entries=b?normalizeEntries(JSON.parse(b.entries)):initialEntries(data,ses),carriedFrom=null;
+  if(!b){
+   const previous=await db.prepare(`SELECT boards.session_id,boards.entries FROM boards JOIN exams ON exams.id=boards.exam_id JOIN json_each(exams.data,'$.schedule') AS scheduled ON json_extract(scheduled.value,'$.id')=boards.session_id
+    WHERE boards.exam_id=? AND boards.confirmed=1 AND json_extract(scheduled.value,'$.kind')='考試'
+    AND json_extract(scheduled.value,'$.date')=? AND json_extract(scheduled.value,'$.classroom')=?
+    AND json_extract(scheduled.value,'$.start')<? AND json_extract(scheduled.value,'$.end')<=?
+    ORDER BY json_extract(scheduled.value,'$.start') DESC LIMIT 1`).bind(event,ses.date,ses.classroom,ses.start,ses.start).first<{session_id:string;entries:string}>();
+   if(previous){const result=prefillEntries(data,ses,JSON.parse(previous.entries)),source=data.schedule.find(s=>s.id===previous.session_id)!;entries=result.entries;if(result.count)carriedFrom={session:source.id,period:source.period,subject:source.subject,start:source.start,end:source.end,count:result.count};}
+  }
+  return json({session:ses,closed:!!e.closed||!!e.draft,confirmed:!!b?.confirmed,students:data.students.filter(s=>s.classroom===ses.classroom).sort((a,b)=>a.seat-b.seat).map(s=>user.role==='teacher'?{...s,name:maskStudentName(s.name)}:s),arrangements:data.arrangements.filter(a=>a.session===sid),entries,carriedFrom,revision:b?.revision||0,actor:b?.actor||'',updatedAt:b?.updated_at||''});
  }
  if(p==='board'&&req.method==='POST'){
   if(!ses||ses.kind!=='考試')throw new ApiError(404,'此時段不需點名');if(e.closed||e.draft)throw new ApiError(409,'考試尚未開放或已結案');
@@ -122,13 +131,13 @@ async function handle(req:Request,parts:string[]){
   return json({ok:true,revision:saved.revision,updatedAt:now,actor:user.name});
  }
  if(p==='history'&&req.method==='GET'){
-  requireAdmin(user);const rows=await db.prepare('SELECT revision,entries,actor,at,action FROM audits WHERE exam_id=? AND session_id=? ORDER BY revision DESC LIMIT 50').bind(event,sid).all();return json({history:rows.results.map(r=>({...r,entries:JSON.parse(r.entries as string)}))});
+  requireAdmin(user);const rows=await db.prepare('SELECT revision,entries,actor,at,action FROM audits WHERE exam_id=? AND session_id=? ORDER BY revision DESC LIMIT 50').bind(event,sid).all();return json({history:rows.results.map(r=>({...r,entries:normalizeEntries(JSON.parse(r.entries as string))}))});
  }
  if(p==='export'&&req.method==='GET'){
   requireAdmin(user);
   // D1 batch supplies a consistent snapshot of both the immutable exam and attendance.
   const snap=await db.batch([db.prepare('SELECT data FROM exams WHERE id=?').bind(event),db.prepare('SELECT session_id,entries,revision,confirmed,actor,updated_at FROM boards WHERE exam_id=?').bind(event)]);
-  return json({data:await corrected(JSON.parse((snap[0].results[0] as {data:string}).data)),boards:(snap[1].results as Board[]).map(r=>({...r,entries:JSON.parse(r.entries as string)})),exportedAt:new Date().toISOString()});
+  return json({data:await corrected(JSON.parse((snap[0].results[0] as {data:string}).data)),boards:(snap[1].results as Board[]).map(r=>({...r,entries:normalizeEntries(JSON.parse(r.entries as string))})),exportedAt:new Date().toISOString()});
  }
  throw new ApiError(404,'找不到此操作');
 }

@@ -3,10 +3,22 @@ export type ExamSession={id:string;event:string;title:string;date:string;classro
 export type Arrangement={id:string;session:string;arrangement:'原班'|'抽離'|'免到考';location:string};
 export type Location={code:string;name:string;floor:number|null;description:string;status:string};
 export type Dataset={version:string;event:string;students:Student[];schedule:ExamSession[];arrangements:Arrangement[];locations:Location[]};
-export const STATUSES=['出席','缺席','請假','抽離'] as const;
-export type Status=typeof STATUSES[number]|'未點名'|'免到考'|'遲到';
+export const STATUSES=['出席','缺席','抽離'] as const;
+export type Status=typeof STATUSES[number]|'未點名'|'免到考'|'遲到'|'請假';
 export type Entry={status:Status;note:string};
 export type Entries=Record<string,Entry>;
+// Read legacy leave records as absent; retain stored audits without destructive migration.
+export function normalizeEntries(entries:Entries):Entries{
+ return Object.fromEntries(Object.entries(entries).map(([id,entry])=>[id,{...entry,status:entry.status==='請假'?'缺席':entry.status}]));
+}
+export function prefillEntries(data:Dataset,session:ExamSession,previous:Entries){
+ const entries=initialEntries(data,session),normalized=normalizeEntries(previous);let count=0;
+ for(const [id,entry] of Object.entries(entries)){
+  const status=normalized[id]?.status;
+  if(entry.status==='未點名'&&(status==='出席'||status==='缺席')){entries[id]={status,note:''};count++;}
+ }
+ return {entries,count};
+}
 export function initialEntries(data:Dataset,session:ExamSession):Entries{
  const arrangements=new Map(data.arrangements.filter(a=>a.session===session.id).map(a=>[a.id,a]));
  return Object.fromEntries(data.students.filter(s=>s.classroom===session.classroom).map(s=>{
@@ -22,8 +34,8 @@ export function confirmEntries(data:Dataset,session:ExamSession,input:unknown,pr
   const v=rows[id];if(!v||typeof v.note!=='string'||v.note.length>300)throw new Error('每人備註限300字');
   if(base.status==='免到考'){
    if(v.status!=='免到考')throw new Error('免到考安排需由管理者於匯入階段設定');
-  }else if(v.status!=='未點名'&&!(v.status==='遲到'&&previous?.[id]?.status==='遲到')&&!STATUSES.includes(v.status as typeof STATUSES[number]))throw new Error('出席狀態無效');
-  result[id]={status:v.status==='未點名'?'出席':v.status,note:v.note.trim()};
+  }else if(v.status!=='未點名'&&!(v.status==='遲到'&&previous?.[id]?.status==='遲到')&&!(v.status==='請假'&&previous?.[id]?.status==='請假')&&!STATUSES.includes(v.status as typeof STATUSES[number]))throw new Error('出席狀態無效');
+  result[id]={status:v.status==='未點名'?'出席':v.status==='請假'?'缺席':v.status,note:v.note.trim()};
  }return result;
 }
 export function taipeiNow(now=new Date()){
